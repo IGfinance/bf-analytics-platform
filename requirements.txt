@@ -1,0 +1,6 @@
+pandas
+openpyxl
+pyyaml
+clickhouse-connect
+python-dotenv
+flask

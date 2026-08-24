@@ -1,0 +1,107 @@
+# Соответствие колонок отчёта WB "Еженедельный детализированный отчет"
+# каноническим полям в ClickHouse.
+#
+# Формат: canonical_name -> {type, aliases: [все встречавшиеся варианты написания]}
+#
+# Как добавлять новую колонку, которую WB ввёл впервые:
+#   1. Скрипт ingest_wb.py при загрузке напишет в консоль и в таблицу
+#      unmapped_columns_log, что встретил неизвестный заголовок.
+#   2. Откройте этот файл, решите: это опечатка/пробел в старом названии
+#      (добавьте в aliases к существующему полю) или правда новое поле
+#      (добавьте новую запись ниже + ALTER TABLE ADD COLUMN в ClickHouse).
+
+columns:
+  row_num:                         { type: Int32,    aliases: ["№"] }
+  supply_number:                   { type: String,   aliases: ["Номер поставки"] }
+  subject_category:                { type: String,   aliases: ["Предмет"] }
+  nomenclature_code:                { type: String,   aliases: ["Код номенклатуры"] }
+  brand:                           { type: String,   aliases: ["Бренд"] }
+  supplier_article:                { type: String,   aliases: ["Артикул поставщика"] }
+  product_name:                    { type: String,   aliases: ["Название"] }
+  size:                            { type: String,   aliases: ["Размер"] }
+  barcode:                         { type: String,   aliases: ["Баркод"] }
+  document_type:                   { type: String,   aliases: ["Тип документа"] }
+  payment_reason:                  { type: String,   aliases: ["Обоснование для оплаты"] }
+  order_date:                      { type: Date,     aliases: ["Дата заказа покупателем"] }
+  sale_date:                       { type: Date,     aliases: ["Дата продажи"] }
+  qty:                             { type: Int32,    aliases: ["Кол-во"] }
+  retail_price:                    { type: Float64,  aliases: ["Цена розничная"] }
+  wb_realized_amount:              { type: Float64,  aliases: ["Вайлдберриз реализовал Товар (Пр)"] }
+  agreed_product_discount_pct:     { type: Float64,  aliases: ["Согласованный продуктовый дисконт, %"] }
+  promo_code_pct:                  { type: Float64,  aliases: ["Промокод, %"] }
+  total_agreed_discount_pct:       { type: Float64,  aliases: ["Итоговая согласованная скидка, %"] }
+  retail_price_with_discount:      { type: Float64,  aliases: ["Цена розничная с учетом согласованной скидки"] }
+  kvv_reduction_rating_pct:        { type: Float64,  aliases: ["Размер снижения кВВ из-за рейтинга, %"] }
+  kvv_change_promo_pct:            { type: Float64,  aliases: ["Размер изменения кВВ из-за акции, %"] }
+  platform_discount_pct:           { type: Float64,  aliases: ["Платформенные скидки, %"] }
+  kvv_pct:                         { type: Float64,  aliases: ["Размер кВВ, %"] }
+  kvv_base_excl_vat_pct:
+    type: Float64
+    aliases:
+      - "Размер  кВВ без НДС, % Базовый"   # актуальный вариант (двойной пробел)
+      - "Размер кВВ без НДС, % Базовый"    # старый вариант (одинарный пробел)
+  total_kvv_excl_vat_pct:          { type: Float64,  aliases: ["Итоговый кВВ без НДС, %"] }
+  sales_commission_before_agent_fee_excl_vat: { type: Float64, aliases: ["Вознаграждение с продаж до вычета услуг поверенного, без НДС"] }
+  pvz_handling_compensation:       { type: Float64,  aliases: ["Возмещение за выдачу и возврат товаров на ПВЗ"] }
+  payment_services_compensation:   { type: Float64,  aliases: ["Компенсация платёжных услуг/Комиссия за интеграцию платёжных сервисов"] }
+  payment_services_compensation_pct: { type: Float64, aliases: ["Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %"] }
+  payment_compensation_type:       { type: String,   aliases: ["Тип платежа: компенсация платёжных услуг/Комиссия за интеграцию платёжных сервисов"] }
+  wb_commission_excl_vat:          { type: Float64,  aliases: ["Вознаграждение Вайлдберриз (ВВ), без НДС"] }
+  vat_on_wb_commission:            { type: Float64,  aliases: ["НДС с Вознаграждения Вайлдберриз"] }
+  payable_to_seller:               { type: Float64,  aliases: ["К перечислению Продавцу за реализованный Товар"] }
+  delivery_qty:                    { type: Int32,    aliases: ["Количество доставок"] }
+  return_qty:                      { type: Int32,    aliases: ["Количество возврата"] }
+  delivery_service_cost:           { type: Float64,  aliases: ["Услуги по доставке товара покупателю"] }
+  fixation_start_date:             { type: Date,     aliases: ["Дата начала действия фиксации"] }
+  fixation_end_date:               { type: Date,     aliases: ["Дата конца действия фиксации"] }
+  paid_delivery_flag:              { type: String,   aliases: ["Признак услуги платной доставки"] }
+  total_fines:                     { type: Float64,  aliases: ["Общая сумма штрафов"] }
+  wb_commission_correction:        { type: Float64,  aliases: ["Корректировка Вознаграждения Вайлдберриз (ВВ)"] }
+  logistics_fines_corrections_type:
+    type: String
+    aliases:
+      - "Виды логистики, штрафов и корректировок ВВ"
+      - "Виды логистики, штрафов и доплат"   # старое название (до переименования WB)
+  marketplace_sticker:             { type: String,   aliases: ["Стикер МП"] }
+  acquiring_bank_name:             { type: String,   aliases: ["Наименование банка-эквайера"] }
+  office_number:                   { type: String,   aliases: ["Номер офиса"] }
+  delivery_office_name:            { type: String,   aliases: ["Наименование офиса доставки"] }
+  partner_inn:                     { type: String,   aliases: ["ИНН партнера"] }
+  partner:                         { type: String,   aliases: ["Партнер"] }
+  warehouse:                       { type: String,   aliases: ["Склад"] }
+  country:                         { type: String,   aliases: ["Страна"] }
+  box_type:                        { type: String,   aliases: ["Тип коробов"] }
+  customs_declaration_number:      { type: String,   aliases: ["Номер таможенной декларации"] }
+  assembly_order_number:           { type: String,   aliases: ["Номер сборочного задания"] }
+  marking_code:                    { type: String,   aliases: ["Код маркировки"] }
+  sku_barcode:                     { type: String,   aliases: ["ШК"] }
+  srid:                            { type: String,   aliases: ["Srid"] }
+  transport_warehouse_compensation: { type: Float64,  aliases: ["Возмещение издержек по перевозке/по складским операциям с товаром"] }
+  transport_organizer:             { type: String,   aliases: ["Организатор перевозки"] }
+  storage_cost:                    { type: Float64,  aliases: ["Хранение"] }
+  deductions:                      { type: Float64,  aliases: ["Удержания"] }
+  acceptance_operations:           { type: Float64,  aliases: ["Операции на приемке"] }
+  chrt_id:                         { type: String,   aliases: ["chrtId"] }
+  warehouse_fixed_coefficient:     { type: Float64,  aliases: ["Фиксированный коэффициент склада по поставке"] }
+  legal_entity_sale_flag:          { type: String,   aliases: ["Признак продажи юридическому лицу"] }
+  inventory_item:                  { type: String,   aliases: ["ТМЦ"] }
+  box_number:                      { type: String,   aliases: ["Номер короба для обработки товара"] }
+  cofinancing_discount:            { type: Float64,  aliases: ["Скидка по программе софинансирования"] }
+  wibes_discount_pct:              { type: Float64,  aliases: ["Скидка Wibes, %"] }
+  loyalty_discount_compensation:   { type: Float64,  aliases: ["Компенсация скидки по программе лояльности"] }
+  loyalty_program_cost:            { type: Float64,  aliases: ["Стоимость участия в программе лояльности"] }
+  loyalty_points_deducted:         { type: Float64,  aliases: ["Сумма баллов, удержанных по программе лояльности"] }
+  basket_id:                       { type: String,   aliases: ["Id корзины заказа"] }
+  one_time_payment_term_change:    { type: String,   aliases: ["Разовое изменение срока перечисления денежных средств"] }
+  sale_method_product_type:        { type: String,   aliases: ["Способы продажи и тип товара"] }
+  seller_promo_id:                 { type: String,   aliases: ["Id собственной акции продавца с дополнительной скидкой"] }
+  seller_promo_discount_pct:       { type: Float64,  aliases: ["Размер дополнительной скидки по собственной акции продавца, %"] }
+  loyalty_discount_id:             { type: String,   aliases: ["Уникальный идентификатор скидки лояльности от продавца"] }
+  loyalty_discount_pct:            { type: Float64,  aliases: ["Размер скидки лояльности от продавца, %"] }
+  promo_code_id:                   { type: String,   aliases: ["Id промокода"] }
+  promo_code_discount_pct:         { type: Float64,  aliases: ["Скидка за промокод, %"] }
+  substitute_article_id:           { type: String,   aliases: ["Id подменного артикула"] }
+  substitute_article_discount_pct: { type: Float64,  aliases: ["Скидка по подменному артикулу, %"] }
+  wholesale_business_discount_pct: { type: Float64,  aliases: ["Оптовая скидка для бизнеса, %"] }
+  buyer_inn:                       { type: String,   aliases: ["ИНН покупателя-юрлица или ИП"] }
+  social_certificate_payment:      { type: Float64,  aliases: ["Оплата социальным сертификатом"] }

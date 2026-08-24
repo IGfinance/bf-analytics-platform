@@ -1,0 +1,97 @@
+# reconciliation_rules_wb.yaml
+#
+# Маппинг колонок сводного еженедельного отчёта WB → SQL-агрегаты по таблице wb_reports.
+# Используется reconcile_wb.py. Все суммы в рублях.
+# tolerance — максимальное допустимое абсолютное отклонение при сравнении.
+#
+# Подтверждено кросс-проверкой на 6 парах отчётов (12 report_number):
+#   588096868/69, 595018779/80, 608445079/80, 614789938/39, 621614213/14, 628438488/89
+#
+# ВАЖНО: SQL-выражения агрегируются по (cabinet, report_number).
+# Для Nullable-полей используется coalesce(..., 0) — без него вычитание двух sumIf
+# возвращает NULL, если вторая условие не даёт строк.
+
+rules:
+
+  - summary_column: "Продажа"
+    ch_expression: >-
+      coalesce(sumIf(wb_realized_amount, document_type = 'Продажа'), 0)
+      - coalesce(sumIf(wb_realized_amount, document_type = 'Возврат'), 0)
+    tolerance: 0.01
+    notes: "Подтверждено на 6 парах отчётов, точное совпадение (diff=0)"
+
+  - summary_column: "В том числе Компенсация скидки по программе лояльности"
+    ch_expression: "coalesce(sum(loyalty_discount_compensation), 0)"
+    tolerance: 1500
+    notes: >-
+      WB иногда записывает loyalty_discount_compensation под другим report_number в детальном
+      отчёте, чем в сводном. Наблюдаемое расхождение до ~1132 руб. Tolerance 1500 с запасом.
+
+  - summary_column: "К перечислению за товар"
+    ch_expression: >-
+      coalesce(sumIf(payable_to_seller, document_type = 'Продажа'), 0)
+      - coalesce(sumIf(payable_to_seller, document_type = 'Возврат'), 0)
+    tolerance: 0.01
+    notes: "Подтверждено на 6 парах отчётов, точное совпадение (diff=0)"
+
+  - summary_column: "Стоимость логистики"
+    ch_expression: "coalesce(sum(delivery_service_cost), 0)"
+    tolerance: 0.01
+    notes: "Включает строки с payment_reason='Логистика'. Точное совпадение."
+
+  - summary_column: "Стоимость хранения"
+    ch_expression: "coalesce(sum(storage_cost), 0)"
+    tolerance: 0.01
+
+  - summary_column: "Стоимость операций на приемке"
+    ch_expression: "coalesce(sum(acceptance_operations), 0)"
+    tolerance: 0.01
+
+  - summary_column: "Прочие удержания/выплаты"
+    ch_expression: "coalesce(sum(deductions), 0)"
+    tolerance: 0.01
+    notes: "Поле deductions в wb_reports = 'Удержания'. Точное совпадение."
+
+  - summary_column: "Общая сумма штрафов"
+    ch_expression: "coalesce(sum(total_fines), 0)"
+    tolerance: 0.01
+
+  - summary_column: "Корректировка Вознаграждения Вайлдберриз (ВВ)"
+    ch_expression: "coalesce(sum(wb_commission_correction), 0)"
+    tolerance: 0.01
+
+  - summary_column: "Стоимость участия в программе лояльности"
+    ch_expression: "coalesce(sum(loyalty_program_cost), 0)"
+    tolerance: 200
+    notes: "Наблюдаемые расхождения до ~57 руб.; может быть отрицательным (кредит от WB)."
+
+  - summary_column: "Сумма баллов, удержанных по программе лояльности"
+    ch_expression: "coalesce(sum(loyalty_points_deducted), 0)"
+    tolerance: 1500
+    notes: "Наблюдаемые расхождения до ~1140 руб. Та же природа что у loyalty_discount_compensation."
+
+  - summary_column: "Итого к оплате"
+    ch_expression: >-
+      (coalesce(sumIf(payable_to_seller, document_type = 'Продажа'), 0)
+       - coalesce(sumIf(payable_to_seller, document_type = 'Возврат'), 0))
+      - coalesce(sum(delivery_service_cost), 0)
+      - coalesce(sum(storage_cost), 0)
+      - coalesce(sum(acceptance_operations), 0)
+      - coalesce(sum(deductions), 0)
+      - coalesce(sum(total_fines), 0)
+      - coalesce(sum(wb_commission_correction), 0)
+      - coalesce(sum(loyalty_program_cost), 0)
+      - coalesce(sum(loyalty_points_deducted), 0)
+    tolerance: 3500
+    notes: >-
+      Вычисляется из других полей. Расхождение Итого = сумма расхождений loyalty-полей
+      (loyalty_points + loyalty_cost). Tolerance = сумма их tolerance с запасом.
+
+# Пропущено (не агрегируемые или нечисловые):
+#   "Согласованная скидка, %"        — процент, нельзя суммировать
+#   "Разовое изменение срока перечисления денежных средств"
+#                                     — в wb_reports тип String, во всех проверенных отчётах = '0'
+#   "Юридическое лицо"               — метаданные (GROUP BY cabinet)
+#   "Дата начала / Дата конца / Дата формирования" — метаданные
+#   "Тип отчета"                      — метаданные (Основной / По выкупам)
+#   "Валюта"                          — всегда RUB
