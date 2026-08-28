@@ -7,6 +7,7 @@
 import re
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 import openpyxl
 from dotenv import load_dotenv
@@ -114,3 +115,26 @@ def parse_income_expenses(path: Path) -> dict:
         "source_file": path.name,
         **totals,
     }
+
+
+def ingest_files(paths: list[Path], cabinet: str, log: Callable = print) -> dict:
+    """
+    Парсит список xlsx «Доходы и расходы» и загружает в wb_income_expenses.
+    Повторная загрузка того же (cabinet, period_start) перезапишет запись.
+    """
+    rows_data = []
+    for path in paths:
+        parsed = parse_income_expenses(path)
+        log(f"  {path.name}: {parsed['period_start']} — {parsed['period_end']}")
+        row = [cabinet] + [parsed[col] for col in INSERT_COLUMNS[1:]]
+        rows_data.append(row)
+
+    if not rows_data:
+        log("Нет файлов для загрузки.")
+        return {"files": 0, "rows": 0}
+
+    client = get_client()
+    client.insert("wb_income_expenses", rows_data, column_names=INSERT_COLUMNS)
+    log(f"Загружено {len(rows_data)} записей в wb_income_expenses.")
+
+    return {"files": len(paths), "rows": len(rows_data)}
