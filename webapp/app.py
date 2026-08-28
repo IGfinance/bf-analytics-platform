@@ -74,6 +74,7 @@ NAV_ITEMS = [
     {"label": "Дашборд", "endpoint": "dashboard", "icon": "layout-dashboard"},
     {"label": "Детальный отчёт", "endpoint": "index", "icon": "upload"},
     {"label": "Сводный отчёт + сверка", "endpoint": "summary_form", "icon": "git-compare"},
+    {"label": "Доходы и расходы + сверка", "endpoint": "income_expenses_form", "icon": "file-check"},
     {"label": "Алерты", "endpoint": None, "icon": "bell"},
 ]
 
