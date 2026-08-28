@@ -12,6 +12,10 @@ venv/
 # Uploads
 webapp/uploads/
 
+# Node / Tailwind CLI (собранный style.css — шаг деплоя, см. DESIGN.md)
+node_modules/
+webapp/static/style.css
+
 # OS
 .DS_Store
 .superpowers/

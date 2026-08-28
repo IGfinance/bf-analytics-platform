@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Результат загрузки{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-bold font-montserrat">Результат загрузки</h1>
+
+  {% if error %}
+    <p class="mt-4 text-sm text-danger">Ошибка: {{ error }}</p>
+  {% else %}
+    <p class="mt-4 text-sm text-success-text">
+      Загружено файлов: {{ summary.files }}, строк: {{ summary.rows }}
+    </p>
+    {% if summary.unmapped_columns %}
+      <div class="mt-4 bg-warning/10 border border-warning/30 rounded-lg p-4 max-w-xl">
+        <p class="text-sm text-warning font-medium">Встречены колонки не из column_mapping_wb.yaml:</p>
+        <ul class="list-disc list-inside text-sm text-secondary mt-2">
+          {% for c in summary.unmapped_columns %}<li>{{ c }}</li>{% endfor %}
+        </ul>
+        <p class="text-xs text-secondary mt-2">Данные сохранены в extra_columns. Обновите маппинг при необходимости.</p>
+      </div>
+    {% endif %}
+  {% endif %}
+
+  {% include "partials/log_output.html" %}
+
+  <a href="{{ url_for('index') }}" class="inline-block mt-6 text-accent hover:text-accent-hover text-sm font-medium transition-colors duration-150">
+    ← Загрузить ещё
+  </a>
+{% endblock %}

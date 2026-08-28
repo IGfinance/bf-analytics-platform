@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Загрузка детальных отчётов WB{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-bold font-montserrat">Загрузка детальных отчётов WB</h1>
+  {% include "partials/error_banner.html" %}
+
+  <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data"
+        class="bg-surface border border-border rounded-2xl p-6 mt-6 max-w-xl">
+    {% include "partials/cabinet_field.html" %}
+
+    <div class="mt-4">
+      <label for="files" class="text-sm font-semibold">Файлы детальных отчётов (.xlsx)</label>
+      <input type="file" id="files" name="files" accept=".xlsx" multiple required
+             class="block w-full mt-2 text-sm text-secondary
+                    file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+                    file:bg-accent file:text-white file:font-medium file:cursor-pointer
+                    hover:file:bg-accent-hover">
+    </div>
+
+    <button type="submit"
+            class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium transition-colors duration-150">
+      Загрузить
+    </button>
+  </form>
+{% endblock %}

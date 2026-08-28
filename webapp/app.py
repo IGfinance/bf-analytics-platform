@@ -7,6 +7,7 @@
   POST /upload    — обработка детального отчёта
   GET  /summary   — форма загрузки сводного отчёта
   POST /upload-summary — обработка сводного отчёта + сверка
+  GET  /dashboard — обзор кабинетов
 
 Логин/пароль берутся из .env (WEBAPP_USER / WEBAPP_PASSWORD).
 """
@@ -19,7 +20,7 @@ from functools import wraps
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, render_template, request
 
 WEBAPP_DIR = Path(__file__).parent
 CLICKHOUSE_DIR = WEBAPP_DIR.parent
@@ -39,8 +40,42 @@ from wb_income_expenses_core import (      # noqa: E402
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 МБ на запрос
 
+
+class PrefixMiddleware:
+    """Подставляет внешний префикс пути (например, /cloudsix из nginx
+    location) в SCRIPT_NAME, чтобы url_for генерировал абсолютные ссылки
+    (/static/..., /dashboard и т.п.), рабочие из-под этого префикса.
+
+    Нужен, потому что nginx проксирует `location /cloudsix/` на бэкенд
+    БЕЗ префикса (proxy_pass с trailing slash), а Flask ничего не знает
+    о внешнем пути, если явно не сказать через SCRIPT_NAME/URL_PREFIX.
+    """
+
+    def __init__(self, wsgi_app, prefix=""):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix.rstrip("/")
+
+    def __call__(self, environ, start_response):
+        if self.prefix:
+            environ["SCRIPT_NAME"] = self.prefix
+        return self.wsgi_app(environ, start_response)
+
+
+URL_PREFIX = os.environ.get("URL_PREFIX", "")
+if URL_PREFIX:
+    app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix=URL_PREFIX)
+
 UPLOAD_DIR = WEBAPP_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Единый источник навигации оболочки — endpoint=None рендерится как
+# отключённый пункт (фича ещё не реализована), а не мёртвая ссылка.
+NAV_ITEMS = [
+    {"label": "Дашборд", "endpoint": "dashboard", "icon": "layout-dashboard"},
+    {"label": "Детальный отчёт", "endpoint": "index", "icon": "upload"},
+    {"label": "Сводный отчёт + сверка", "endpoint": "summary_form", "icon": "git-compare"},
+    {"label": "Алерты", "endpoint": None, "icon": "bell"},
+]
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +123,22 @@ def requires_auth(f):
     return decorated
 
 
+@app.context_processor
+def inject_shell_context():
+    """Общие данные оболочки (header + sidebar) для всех шаблонов.
+
+    current_project/unread_alerts — заглушки до миграций
+    projects/project_cabinets/alerts (см. текущие приоритеты в вики).
+    """
+    return {
+        "nav_items": NAV_ITEMS,
+        "current_project": None,
+        "unread_alerts": 0,
+    }
+
+
 # ---------------------------------------------------------------------------
-# Templates
+# Routes — дашборд
 # ---------------------------------------------------------------------------
 
 _BASE_STYLE = """
@@ -289,6 +338,13 @@ SUMMARY_RESULT_HTML = """
 </body></html>
 """
 
+
+@app.route("/dashboard", methods=["GET"])
+@requires_auth
+def dashboard():
+    return render_template("dashboard.html", cabinets=get_cabinets())
+
+
 IE_FORM_HTML = """
 <!doctype html><html lang="ru"><head><meta charset="utf-8">
 <title>Доходы и расходы + сверка</title>{{ style | safe }}</head>
@@ -380,10 +436,7 @@ IE_RESULT_HTML = """
 @app.route("/", methods=["GET"])
 @requires_auth
 def index():
-    return render_template_string(
-        FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-        error=None, cabinets=get_cabinets(),
-    )
+    return render_template("detail_form.html", error=None, cabinets=get_cabinets())
 
 
 @app.route("/upload", methods=["POST"])
@@ -393,14 +446,12 @@ def upload():
     files = request.files.getlist("files")
 
     if not cabinet:
-        return render_template_string(
-            FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Укажите кабинет", cabinets=get_cabinets(),
+        return render_template(
+            "detail_form.html", error="Укажите кабинет", cabinets=get_cabinets(),
         ), 400
     if not files or all(f.filename == "" for f in files):
-        return render_template_string(
-            FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Выберите хотя бы один файл", cabinets=get_cabinets(),
+        return render_template(
+            "detail_form.html", error="Выберите хотя бы один файл", cabinets=get_cabinets(),
         ), 400
 
     saved_paths, skipped = [], []
@@ -414,9 +465,8 @@ def upload():
         saved_paths.append(dest)
 
     if not saved_paths:
-        return render_template_string(
-            FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Ни одного .xlsx файла не найдено", cabinets=get_cabinets(),
+        return render_template(
+            "detail_form.html", error="Ни одного .xlsx файла не найдено", cabinets=get_cabinets(),
         ), 400
 
     logs = []
@@ -426,18 +476,14 @@ def upload():
     try:
         summary = ingest_files(saved_paths, cabinet, log=logs.append)
     except Exception as e:
-        return render_template_string(
-            RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
-            error=str(e), summary=None, logs=logs,
+        return render_template(
+            "detail_result.html", error=str(e), summary=None, logs=logs,
         ), 500
     finally:
         for p in saved_paths:
             p.unlink(missing_ok=True)
 
-    return render_template_string(
-        RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
-        error=None, summary=summary, logs=logs,
-    )
+    return render_template("detail_result.html", error=None, summary=summary, logs=logs)
 
 
 # ---------------------------------------------------------------------------
@@ -447,10 +493,7 @@ def upload():
 @app.route("/summary", methods=["GET"])
 @requires_auth
 def summary_form():
-    return render_template_string(
-        SUMMARY_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-        error=None, cabinets=get_cabinets(),
-    )
+    return render_template("summary_form.html", error=None, cabinets=get_cabinets())
 
 
 @app.route("/upload-summary", methods=["POST"])
@@ -460,21 +503,18 @@ def upload_summary():
     f = request.files.get("file")
 
     if not cabinet:
-        return render_template_string(
-            SUMMARY_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Укажите кабинет", cabinets=get_cabinets(),
+        return render_template(
+            "summary_form.html", error="Укажите кабинет", cabinets=get_cabinets(),
         ), 400
     if not f or f.filename == "":
-        return render_template_string(
-            SUMMARY_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Выберите файл", cabinets=get_cabinets(),
+        return render_template(
+            "summary_form.html", error="Выберите файл", cabinets=get_cabinets(),
         ), 400
 
     filename = safe_filename(f.filename)
     if not filename.lower().endswith(".xlsx"):
-        return render_template_string(
-            SUMMARY_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Файл должен быть .xlsx", cabinets=get_cabinets(),
+        return render_template(
+            "summary_form.html", error="Файл должен быть .xlsx", cabinets=get_cabinets(),
         ), 400
 
     dest = UPLOAD_DIR / filename
@@ -527,8 +567,8 @@ def upload_summary():
         r["report_number"] for r in rows_as_dicts if r.get("status") == "missing_summary"
     })
 
-    return render_template_string(
-        SUMMARY_RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
+    return render_template(
+        "summary_result.html",
         error=None,
         ingest_rows=ingest_result["rows"],
         counts=counts,
