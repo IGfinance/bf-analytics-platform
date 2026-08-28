@@ -20,7 +20,7 @@ from functools import wraps
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, render_template, request
+from flask import Flask, Response, render_template, render_template_string, request
 
 WEBAPP_DIR = Path(__file__).parent
 CLICKHOUSE_DIR = WEBAPP_DIR.parent
