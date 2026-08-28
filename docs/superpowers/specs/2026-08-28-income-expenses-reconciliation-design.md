@@ -76,14 +76,20 @@ CREATE TABLE IF NOT EXISTS wb_income_expenses
     loaded_at      DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(loaded_at)
+PARTITION BY toYYYYMM(period_start)
 ORDER BY (cabinet, period_start)
 ```
 
 Дедупликация по `(cabinet, period_start)` — повторная загрузка того же месяца перезаписывает запись.
 
+DDL применяется вручную на сервере (как `schema_wb.sql` и `schema_wb_summary.sql`) — **не через Metabase**. Файл сохраняется в `schema_wb_income_expenses.sql` в корне проекта.
+
 ---
 
 ## Новый модуль: `wb_income_expenses_core.py`
+
+`get_client()` импортируется из `wb_core.py` — не дублируется (правило из ревью PR #1).
+Все SQL-запросы через `client.query(sql, parameters={...})` — без f-string с пользовательскими данными.
 
 ### `parse_income_expenses(path: Path) -> dict`
 
