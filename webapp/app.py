@@ -487,6 +487,9 @@ def upload_summary():
         missing_raw_reports=missing_raw_reports,
         missing_summary_rns=missing_summary_rns,
         logs=logs,
+        total=sum(counts.values()),
+        failed=len(mismatches),
+        failures=mismatches,
     )
 
 
