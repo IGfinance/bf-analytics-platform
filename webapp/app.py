@@ -32,10 +32,6 @@ load_dotenv(WEBAPP_DIR / ".env")       # логин/пароль формы (м�
 from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
 from reconcile_wb import run_reconciliation            # noqa: E402
-from wb_income_expenses_core import (      # noqa: E402
-    ingest_files as ingest_income_expenses,
-    reconcile_income_expenses,
-)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 МБ на запрос
@@ -74,7 +70,6 @@ NAV_ITEMS = [
     {"label": "Дашборд", "endpoint": "dashboard", "icon": "layout-dashboard"},
     {"label": "Детальный отчёт", "endpoint": "index", "icon": "upload"},
     {"label": "Сводный отчёт + сверка", "endpoint": "summary_form", "icon": "git-compare"},
-    {"label": "Доходы и расходы + сверка", "endpoint": "income_expenses_form", "icon": "file-check"},
     {"label": "Алерты", "endpoint": None, "icon": "bell"},
 ]
 
@@ -173,7 +168,6 @@ _NAV = """
 <nav>
   <a href="./">Детальный отчёт</a>
   <a href="summary">Сводный отчёт + сверка</a>
-  <a href="income-expenses">Доходы и расходы + сверка</a>
 </nav>
 """
 
@@ -346,90 +340,6 @@ def dashboard():
     return render_template("dashboard.html", cabinets=get_cabinets())
 
 
-IE_FORM_HTML = """
-<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Доходы и расходы + сверка</title>{{ style | safe }}</head>
-<body>
-  {{ nav | safe }}
-  <h1>Загрузка отчёта «Доходы и расходы» + сверка</h1>
-  <p class="hint">Загрузите файл «Детальный отчёт по доходам и расходам» (xlsx) за один месяц.
-  Данные сохранятся в wb_income_expenses, затем автоматически сверятся с wb_reports.</p>
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
-  <form action="upload-income-expenses" method="post" enctype="multipart/form-data">
-    <label for="cabinet">Кабинет</label>
-    <input type="text" id="cabinet" name="cabinet" list="cabinets"
-           placeholder="Выберите или введите новый..." autocomplete="off" required
-           oninput="if(this.value==='+ Добавить новый кабинет'){this.value='';this.placeholder='Введите название нового кабинета';}">
-    <datalist id="cabinets">
-      <option value="+ Добавить новый кабинет">
-      {% for c in cabinets %}<option value="{{ c }}">{% endfor %}
-    </datalist>
-    <p class="hint">Выберите из списка или введите название нового кабинета вручную.</p>
-
-    <label for="file">Файл отчёта (.xlsx)</label>
-    <input type="file" id="file" name="file" accept=".xlsx" required>
-
-    <input type="submit" value="Загрузить и сверить">
-  </form>
-</body></html>
-"""
-
-IE_RESULT_HTML = """
-<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Результат сверки доходов и расходов</title>{{ style | safe }}
-<style>
-  .diff-ok   { color: #1a7a34; }
-  .diff-warn { color: #c00; font-weight: 600; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-</style>
-</head>
-<body>
-  {{ nav | safe }}
-  <h1>Результат загрузки и сверки</h1>
-  {% if error %}
-    <p class="error">Ошибка: {{ error }}</p>
-  {% else %}
-    <p class="ok">Загружено записей: {{ ingest_rows }}</p>
-
-    {% if rows %}
-      {% set ns = namespace(cur_period=None) %}
-      {% for r in rows %}
-        {% if r.period_start != ns.cur_period %}
-          {% if ns.cur_period is not none %}</table>{% endif %}
-          {% set ns.cur_period = r.period_start %}
-          <h2>{{ r.period_start }} — {{ r.period_end }}</h2>
-          <table>
-            <tr>
-              <th>Метрика</th>
-              <th>Файл</th>
-              <th>ClickHouse</th>
-              <th>Разница</th>
-              <th>Допуск</th>
-              <th>Статус</th>
-            </tr>
-        {% endif %}
-        <tr class="{{ 'fail' if not r.is_ok else '' }}">
-          <td>{{ r.metric_name }}</td>
-          <td class="num">{{ "%.0f"|format(r.file_value) }}</td>
-          <td class="num">{{ "%.0f"|format(r.ch_value) }}</td>
-          <td class="num {{ 'diff-warn' if not r.is_ok else 'diff-ok' }}">
-            {{ "%+.0f"|format(r.ch_value - r.file_value) }}
-          </td>
-          <td class="num">± {{ "%.0f"|format(r.tolerance) }}</td>
-          <td>{{ '✅' if r.is_ok else '⚠️' }}</td>
-        </tr>
-      {% endfor %}
-      {% if rows %}</table>{% endif %}
-    {% else %}
-      <p class="warn">Нет данных для сверки — загрузите файл и попробуйте снова.</p>
-    {% endif %}
-  {% endif %}
-  {% if logs %}<pre>{{ logs|join('\n') }}</pre>{% endif %}
-  <a href="income-expenses">← Загрузить ещё</a>
-</body></html>
-"""
-
-
 # ---------------------------------------------------------------------------
 # Routes — детальный отчёт
 # ---------------------------------------------------------------------------
@@ -576,74 +486,6 @@ def upload_summary():
         mismatches=mismatches,
         missing_raw_reports=missing_raw_reports,
         missing_summary_rns=missing_summary_rns,
-        logs=logs,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Routes — доходы и расходы + сверка
-# ---------------------------------------------------------------------------
-
-@app.route("/income-expenses", methods=["GET"])
-@requires_auth
-def income_expenses_form():
-    return render_template_string(
-        IE_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-        error=None, cabinets=get_cabinets(),
-    )
-
-
-@app.route("/upload-income-expenses", methods=["POST"])
-@requires_auth
-def upload_income_expenses():
-    cabinet = request.form.get("cabinet", "").strip()
-    f = request.files.get("file")
-
-    if not cabinet:
-        return render_template_string(
-            IE_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Укажите кабинет", cabinets=get_cabinets(),
-        ), 400
-    if not f or f.filename == "":
-        return render_template_string(
-            IE_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Выберите файл", cabinets=get_cabinets(),
-        ), 400
-
-    filename = safe_filename(f.filename)
-    if not filename.lower().endswith(".xlsx"):
-        return render_template_string(
-            IE_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Файл должен быть .xlsx", cabinets=get_cabinets(),
-        ), 400
-
-    dest = UPLOAD_DIR / filename
-    f.save(dest)
-
-    logs = []
-    try:
-        ingest_result = ingest_income_expenses([dest], cabinet, log=logs.append)
-        client = get_client()
-        recon_rows = reconcile_income_expenses(client, cabinet, log=logs.append)
-    except Exception as e:
-        return render_template_string(
-            IE_RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
-            error=str(e), ingest_rows=0, rows=[], logs=logs,
-        ), 500
-    finally:
-        dest.unlink(missing_ok=True)
-
-    FIELDS = [
-        "period_start", "period_end", "metric_name",
-        "file_value", "ch_value", "diff", "tolerance", "is_ok",
-    ]
-    rows = [dict(zip(FIELDS, r)) for r in recon_rows]
-
-    return render_template_string(
-        IE_RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
-        error=None,
-        ingest_rows=ingest_result["rows"],
-        rows=rows,
         logs=logs,
     )
 
