@@ -138,3 +138,155 @@ def ingest_files(paths: list[Path], cabinet: str, log: Callable = print) -> dict
     log(f"Загружено {len(rows_data)} записей в wb_income_expenses.")
 
     return {"files": len(paths), "rows": len(rows_data)}
+
+
+# SQL считает те же метрики, что wb_metrics_by_month.sql, но за произвольный диапазон дат.
+# CS_K_TYPES — константа кода, не пользовательский ввод, поэтому зашита прямо в SQL.
+_RECONCILE_SQL = """
+WITH cs_k AS (SELECT arrayJoin([
+    'продажа', 'сторно продаж', 'авансовая оплата за товар без движения',
+    'возврат', 'корректный возврат', 'корректная продажа',
+    'компенсация брака', 'компенсация потерянного товара',
+    'сторно возвратов', 'компенсация ущерба',
+    'добровольная компенсация при возврате',
+    'компенсация подмененного товара', 'частичная компенсация брака'
+]) AS v)
+SELECT
+    coalesce(sumIf(qty, lowerUTF8(trim(payment_reason)) = 'продажа'), 0)
+    - coalesce(sumIf(qty, lowerUTF8(trim(payment_reason)) = 'возврат'), 0)
+        AS kol_prodazh,
+
+    coalesce(sumIf(retail_price_with_discount,
+        lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k)
+        AND lowerUTF8(trim(document_type)) = 'продажа'), 0)
+    - coalesce(sumIf(retail_price_with_discount,
+        lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k)
+        AND lowerUTF8(trim(document_type)) = 'возврат'), 0)
+        AS prodazhi_spp,
+
+    (
+      coalesce(sumIf(payable_to_seller,
+          lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k)
+          AND lowerUTF8(trim(document_type)) = 'продажа'), 0)
+      - coalesce(sumIf(payable_to_seller,
+          lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k)
+          AND lowerUTF8(trim(document_type)) = 'возврат'), 0)
+    ) - (
+      coalesce(sumIf(retail_price_with_discount,
+          lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k)
+          AND lowerUTF8(trim(document_type)) = 'продажа'), 0)
+      - coalesce(sumIf(retail_price_with_discount,
+          lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k)
+          AND lowerUTF8(trim(document_type)) = 'возврат'), 0)
+    )
+        AS komissiya,
+
+    -(coalesce(sumIf(delivery_service_cost,
+        payment_reason IN ('Логистика', 'Коррекция логистики')), 0))
+        AS logistika,
+
+    -(coalesce(sum(total_fines), 0)) AS shtrafy,
+
+    -(coalesce(sum(wb_commission_correction), 0)) AS doplaty,
+
+    coalesce(sum(loyalty_discount_compensation), 0)
+    - coalesce(sum(loyalty_program_cost), 0)
+    - coalesce(sum(loyalty_points_deducted), 0)
+        AS skidka_wibes,
+
+    (
+      coalesce(sumIf(payable_to_seller,
+          lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k)
+          AND lowerUTF8(trim(document_type)) = 'продажа'), 0)
+      - coalesce(sumIf(payable_to_seller,
+          lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k)
+          AND lowerUTF8(trim(document_type)) = 'возврат'), 0)
+    )
+    -(coalesce(sumIf(delivery_service_cost,
+        payment_reason IN ('Логистика', 'Коррекция логистики')), 0))
+    -(coalesce(sum(total_fines), 0))
+    -(coalesce(sum(wb_commission_correction), 0))
+    -(coalesce(sum(storage_cost), 0))
+    -(coalesce(sum(acceptance_operations), 0))
+    -(coalesce(sumIf(deductions,
+        trim(REGEXP_REPLACE(REGEXP_REPLACE(logistics_fines_corrections_type,
+            ',\\s*документ\\s*№\\s*\\d+', ''), '\\s+\\d+$', ''))
+        NOT IN ('Оказание услуг «WB Продвижение»', 'Оказание услуг «ВБ.Продвижение»')
+        OR logistics_fines_corrections_type IS NULL), 0))
+    +(coalesce(sum(loyalty_discount_compensation), 0)
+      - coalesce(sum(loyalty_program_cost), 0)
+      - coalesce(sum(loyalty_points_deducted), 0))
+    -(coalesce(sumIf(deductions,
+        trim(REGEXP_REPLACE(REGEXP_REPLACE(logistics_fines_corrections_type,
+            ',\\s*документ\\s*№\\s*\\d+', ''), '\\s+\\d+$', ''))
+        IN ('Оказание услуг «WB Продвижение»', 'Оказание услуг «ВБ.Продвижение»')), 0))
+        AS k_perech
+
+FROM wb_reports FINAL
+WHERE cabinet = {cabinet:String}
+  AND sale_date IS NOT NULL
+  AND sale_date >= {period_start:Date}
+  AND sale_date <= {period_end:Date}
+"""
+
+_CH_ALIASES = ["kol_prodazh", "prodazhi_spp", "komissiya", "logistika",
+               "shtrafy", "doplaty", "skidka_wibes", "k_perech"]
+
+
+def reconcile_income_expenses(client, cabinet: str, log: Callable = print) -> list[tuple]:
+    """
+    Для каждого загруженного периода кабинета сравнивает 8 метрик
+    из wb_income_expenses с расчётами по wb_reports.
+
+    Возвращает list[tuple]:
+    (period_start, period_end, metric_name, file_value, ch_value, diff, tolerance, is_ok)
+    """
+    ie_rows = client.query(
+        "SELECT period_start, period_end, "
+        "n_sales, n_returns, sales_rub, returns_rub, logistics_rub, fines_rub, "
+        "commission_rub, acquiring_rub, losses_rub, bonuses_rub, loyalty_rub, total_rub "
+        "FROM wb_income_expenses FINAL "
+        "WHERE cabinet = {cabinet:String} ORDER BY period_start",
+        parameters={"cabinet": cabinet},
+    ).result_rows
+
+    if not ie_rows:
+        log(f"Нет записей в wb_income_expenses для cabinet='{cabinet}'")
+        return []
+
+    log(f"Сверка: {len(ie_rows)} период(ов) для кабинета '{cabinet}'")
+
+    ie_fields = [
+        "period_start", "period_end",
+        "n_sales", "n_returns", "sales_rub", "returns_rub", "logistics_rub", "fines_rub",
+        "commission_rub", "acquiring_rub", "losses_rub", "bonuses_rub", "loyalty_rub", "total_rub",
+    ]
+
+    results = []
+    for ie_row in ie_rows:
+        ie = dict(zip(ie_fields, ie_row))
+        p_start = ie["period_start"]
+        p_end = ie["period_end"]
+        log(f"  {p_start} — {p_end}")
+
+        ch_row = client.query(
+            _RECONCILE_SQL,
+            parameters={
+                "cabinet": cabinet,
+                "period_start": p_start,
+                "period_end": p_end,
+            },
+        ).result_rows
+
+        ch_values = dict(zip(_CH_ALIASES, ch_row[0])) if ch_row else {k: 0.0 for k in _CH_ALIASES}
+
+        for metric_name, ch_alias, file_formula, tolerance in METRICS:
+            file_val = float(file_formula(ie))
+            ch_val = float(ch_values.get(ch_alias, 0.0))
+            diff = abs(file_val - ch_val)
+            is_ok = 1 if diff <= tolerance else 0
+            label = "OK" if is_ok else f"MISMATCH {diff:.0f}"
+            log(f"    [{label:>18}] {metric_name}  файл={file_val:.0f}  CH={ch_val:.0f}")
+            results.append((p_start, p_end, metric_name, file_val, ch_val, diff, tolerance, is_ok))
+
+    return results
