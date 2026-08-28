@@ -21,11 +21,13 @@ rules:
     notes: "Подтверждено на 6 парах отчётов, точное совпадение (diff=0)"
 
   - summary_column: "В том числе Компенсация скидки по программе лояльности"
-    ch_expression: "coalesce(sum(loyalty_discount_compensation), 0)"
-    tolerance: 1500
+    ch_expression: >-
+      coalesce(sumIf(loyalty_discount_compensation, document_type = 'Продажа'), 0)
+      - coalesce(sumIf(loyalty_discount_compensation, document_type = 'Возврат'), 0)
+    tolerance: 0.01
     notes: >-
-      WB иногда записывает loyalty_discount_compensation под другим report_number в детальном
-      отчёте, чем в сводном. Наблюдаемое расхождение до ~1132 руб. Tolerance 1500 с запасом.
+      Аналогично Продажа: сумма компенсаций по Продажам минус сумма по Возвратам.
+      Старая формула sum() без вычета возвратов давала двойной счёт суммы возвратов.
 
   - summary_column: "К перечислению за товар"
     ch_expression: >-

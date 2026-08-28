@@ -18,3 +18,4 @@ webapp/static/style.css
 
 # OS
 .DS_Store
+.superpowers/
