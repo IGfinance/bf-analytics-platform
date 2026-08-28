@@ -14,3 +14,4 @@ webapp/uploads/
 
 # OS
 .DS_Store
+.superpowers/
