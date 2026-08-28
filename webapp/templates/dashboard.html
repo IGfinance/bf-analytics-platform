@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Дашборд{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-bold font-montserrat">Дашборд</h1>
+  <p class="text-sm text-secondary mt-1">Кабинетов в системе: {{ cabinets|length }}</p>
+
+  <div class="bg-surface border border-border rounded-2xl mt-6 overflow-hidden max-w-xl">
+    <div class="px-6 py-4 border-b border-border">
+      <h2 class="text-lg font-bold font-montserrat">Кабинеты</h2>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-surface text-secondary uppercase text-xs">
+          <tr><th class="px-4 py-3 text-left font-semibold">Кабинет</th></tr>
+        </thead>
+        <tbody>
+          {% for c in cabinets %}
+          <tr class="border-b border-border last:border-0 hover:bg-surface-hover transition-colors duration-150">
+            <td class="px-4 py-3">{{ c }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td class="px-4 py-3 text-secondary">Кабинетов пока нет — загрузите первый отчёт.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="text-xs text-secondary mt-4">
+    История загрузок и алерты появятся здесь после миграций <code>uploads</code>/<code>alerts</code>
+    (см. текущие приоритеты в базе знаний проекта).
+  </p>
+{% endblock %}

@@ -1,0 +1,29 @@
+<header class="h-16 bg-surface border-b border-border flex items-center justify-between px-4 lg:px-6 sticky top-0 z-30">
+  <div class="flex items-center gap-3">
+    <button type="button"
+            class="lg:hidden p-2 -ml-2 rounded-lg text-secondary hover:bg-surface-hover hover:text-primary transition-colors duration-150"
+            aria-label="Открыть меню" data-sidebar-toggle>
+      {% include "icons/menu.svg" %}
+    </button>
+    <span class="text-lg font-bold font-montserrat tracking-tight">bf-analytics</span>
+  </div>
+
+  <div class="flex items-center gap-2 lg:gap-4">
+    {# Переключатель проекта — данные появятся после миграции projects/project_cabinets #}
+    <button type="button"
+            class="flex items-center gap-2 px-3 py-2 rounded-lg border border-border hover:border-border-hover transition-colors duration-150 text-sm font-medium">
+      <span>{{ current_project or "Проект не выбран" }}</span>
+      {% include "icons/chevron-down.svg" %}
+    </button>
+
+    {# Алерты — счётчик непрочитанных из таблицы alerts (появится с миграцией) #}
+    <button type="button"
+            class="relative p-2 rounded-lg text-secondary hover:bg-surface-hover hover:text-primary transition-colors duration-150"
+            aria-label="Алерты">
+      {% include "icons/bell.svg" %}
+      {% if unread_alerts %}
+        <span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-danger animate-pulse"></span>
+      {% endif %}
+    </button>
+  </div>
+</header>

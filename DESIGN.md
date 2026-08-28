@@ -1,0 +1,141 @@
+# DESIGN.md — bf-analytics-platform (webapp)
+
+Дизайн-система рабочей панели загрузки/сверки отчётов. Тёмная тема,
+упрощённая версия стиля `finance-black.ru` (без blur/glassmorphism —
+для рабочего инструмента важнее читаемость таблиц и форм, чем визуальные
+эффекты). Источник токенов бренда: `finance-black.ru` (Inter/Montserrat,
+`#0d1117`, сине-фиолетовые акценты).
+
+Вёрстка — Tailwind CSS через CLI-сборку (см. «Сборка» в конце файла).
+
+## Цветовая палитра
+
+| Токен | Значение | Назначение |
+|---|---|---|
+| `--bg-page` | `#0d1117` | Фон страницы |
+| `--bg-surface` | `#161b22` | Карточки, sidebar, header, таблицы |
+| `--bg-surface-hover` | `#1c2229` | Hover для строк/пунктов меню |
+| `--border` | `rgba(255,255,255,0.08)` | Границы карточек, разделители |
+| `--border-hover` | `rgba(255,255,255,0.15)` | Границы при hover/focus |
+| `--text-primary` | `#ffffff` | Основной текст, заголовки |
+| `--text-secondary` | `#888888` | Подписи, hint-текст |
+| `--text-muted` | `#666666` | Отключённые элементы, плейсхолдеры |
+| `--accent` | `#3b82f6` | Основной акцент: активный пункт меню, ссылки, primary-кнопка |
+| `--accent-hover` | `#2563eb` | Hover/active состояние accent-элементов |
+| `--accent-violet` | `#8b5cf6` | Вторичный акцент: бейджи, второстепенные выделения |
+| `--success` | `#22c55e` | Успешная загрузка, сверка без расхождений |
+| `--success-text` | `#4ade80` | Текст success-состояний на тёмном фоне |
+| `--warning` | `#f59e0b` | Предупреждения (непромапленные колонки и т.п.) |
+| `--danger` | `#ef4444` | Ошибки загрузки, расхождения сверки, алерты |
+
+Не входит в бренд-палитру сайта — стандартные amber/red, добавлены
+только потому что маркетинговая страница их не использует (нет
+соответствующих сценариев), а рабочей панели без danger/warning нельзя.
+
+## Шрифты
+
+| Шрифт | Вес | Где применяется |
+|---|---|---|
+| Montserrat | 700 | Заголовки h1–h3, логотип в header |
+| Inter | 400 / 500 / 600 | Весь остальной текст: тело, формы, таблицы, кнопки |
+
+Подключение — те же Google Fonts, что на `finance-black.ru`
+(`Inter:400,500,600,700` + `Montserrat:700`).
+
+## Типографическая шкала
+
+| Класс (Tailwind) | Размер | Вес | Назначение |
+|---|---|---|---|
+| `text-2xl font-bold font-montserrat` | 24px | 700 | H1 страницы |
+| `text-lg font-bold font-montserrat` | 18px | 700 | H2 / заголовок карточки |
+| `text-sm font-semibold` | 14px | 600 | Заголовки таблиц, подписи полей формы |
+| `text-sm font-medium` | 14px | 500 | Обычный текст, значения в таблицах |
+| `text-xs text-secondary` | 13px | 400 | Hint-текст под полями |
+| `text-xs uppercase tracking-wide` | 11px | 500 | Лейблы статусов, бейджи |
+
+## Стили блоков
+
+- Скругления: `rounded-lg` (8px) для кнопок/инпутов/бейджей, `rounded-2xl` (16px) для карточек и панелей
+- Карточки: `bg-surface border border-[--border] rounded-2xl p-6` — без тени, без blur (упрощение относительно сайта)
+- Таблицы: строки разделены `border-b border-[--border]`, hover строки — `bg-surface-hover`, шапка `bg-surface` с `text-secondary uppercase text-xs`
+- Кнопки primary: `bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium`
+- Кнопки secondary: `border border-[--border] hover:border-[--border-hover] text-primary rounded-lg px-4 py-2`
+- Инпуты: `bg-page border border-[--border] focus:border-accent rounded-lg px-3 py-2`
+- Статус-бейджи: `rounded-full px-2 py-0.5 text-xs` на фоне `success/20`, `danger/20`, `warning/20` с текстом соответствующего цвета
+
+## Адаптивность
+
+| Брейкпоинт | Поведение |
+|---|---|
+| `< 768px` (мобильный) | Sidebar скрыт за бургер-меню, таблицы — горизонтальный скролл в обёртке `overflow-x-auto` |
+| `768–1280px` (планшет) | Sidebar свёрнут до иконок, раскрывается по клику |
+| `> 1280px` (десктоп) | Sidebar развёрнут постоянно (240px), основная область — остальное пространство |
+
+Рабочая панель используется преимущественно с десктопа (загрузка файлов,
+таблицы сверки) — мобильная адаптация нужна только чтобы не ломалась
+вёрстка, не как основной сценарий.
+
+## Иконки
+
+Библиотека — [Lucide](https://lucide.dev) (SVG, легко инлайнится в Jinja
+без JS-зависимостей). Размеры: 16px в кнопках/строках таблиц, 20px в
+навигации sidebar, 24px в заголовках карточек. Только outline-стиль,
+без заливки, цвет наследуется от `currentColor`.
+
+## Анимации
+
+Минимально, никаких decorative-анимаций как на маркетинговом сайте:
+- `transition-colors duration-150` на hover для кнопок, ссылок, строк таблиц
+- Индикатор непрочитанных алертов (🔔) — пульсация `animate-pulse` только пока есть непрочитанные
+- Никаких parallax/scroll-эффектов, градиентных анимаций, blur-переходов
+
+## Шаблоны экранов
+
+**Layout (общая оболочка)**
+
+```
+┌────────────────────────────────────────────────────┐
+│ header: лого · [переключатель проекта] · 🔔 алерты  │ bg-surface, border-b
+├───────────┬──────────────────────────────────────────┤
+│ sidebar   │ main (bg-page, p-6)                       │
+│ (240px,   │   h1 страницы                              │
+│ bg-surface)│  card / card / таблица                    │
+└───────────┴──────────────────────────────────────────┘
+```
+
+**Карточка со статистикой (дашборд)**
+
+```html
+<div class="bg-surface border border-[--border] rounded-2xl p-6">
+  <p class="text-xs text-secondary uppercase">Загрузок за неделю</p>
+  <p class="text-2xl font-bold font-montserrat mt-1">24</p>
+</div>
+```
+
+**Строка таблицы с ошибкой**
+
+```html
+<tr class="border-b border-[--border] hover:bg-surface-hover">
+  <td class="px-4 py-3">2026-08-20 14:03</td>
+  <td class="px-4 py-3">summary.xlsx</td>
+  <td class="px-4 py-3">
+    <span class="rounded-full px-2 py-0.5 text-xs bg-[--danger]/20 text-[--danger]">ошибка</span>
+  </td>
+</tr>
+```
+
+## Сборка
+
+Tailwind CSS v4, конфиг — CSS-first (`@theme` в `webapp/static/src.css`,
+без `tailwind.config.js`). Токены палитры заданы там один раз и
+переиспользуются всеми классами (`bg-page`, `text-accent`, `bg-danger/20`
+и т.п.) — при смене бренд-цвета правится только `src.css`.
+
+```bash
+npm install        # один раз, тянет @tailwindcss/cli
+npm run build:css  # webapp/static/src.css → webapp/static/style.css (minified)
+npm run watch:css  # то же самое, но пересборка при каждом изменении шаблонов
+```
+
+`style.css` не коммитится (см. `.gitignore`) — собирается шагом деплоя
+перед копированием на сервер, без Node-рантайма на проде.

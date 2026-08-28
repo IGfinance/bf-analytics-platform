@@ -7,6 +7,7 @@
   POST /upload    — обработка детального отчёта
   GET  /summary   — форма загрузки сводного отчёта
   POST /upload-summary — обработка сводного отчёта + сверка
+  GET  /dashboard — обзор кабинетов
 
 Логин/пароль берутся из .env (WEBAPP_USER / WEBAPP_PASSWORD).
 """
@@ -19,7 +20,7 @@ from functools import wraps
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, render_template, request
 
 WEBAPP_DIR = Path(__file__).parent
 CLICKHOUSE_DIR = WEBAPP_DIR.parent
@@ -35,8 +36,42 @@ from reconcile_wb import run_reconciliation            # noqa: E402
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 МБ на запрос
 
+
+class PrefixMiddleware:
+    """Подставляет внешний префикс пути (например, /cloudsix из nginx
+    location) в SCRIPT_NAME, чтобы url_for генерировал абсолютные ссылки
+    (/static/..., /dashboard и т.п.), рабочие из-под этого префикса.
+
+    Нужен, потому что nginx проксирует `location /cloudsix/` на бэкенд
+    БЕЗ префикса (proxy_pass с trailing slash), а Flask ничего не знает
+    о внешнем пути, если явно не сказать через SCRIPT_NAME/URL_PREFIX.
+    """
+
+    def __init__(self, wsgi_app, prefix=""):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix.rstrip("/")
+
+    def __call__(self, environ, start_response):
+        if self.prefix:
+            environ["SCRIPT_NAME"] = self.prefix
+        return self.wsgi_app(environ, start_response)
+
+
+URL_PREFIX = os.environ.get("URL_PREFIX", "")
+if URL_PREFIX:
+    app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix=URL_PREFIX)
+
 UPLOAD_DIR = WEBAPP_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Единый источник навигации оболочки — endpoint=None рендерится как
+# отключённый пункт (фича ещё не реализована), а не мёртвая ссылка.
+NAV_ITEMS = [
+    {"label": "Дашборд", "endpoint": "dashboard", "icon": "layout-dashboard"},
+    {"label": "Детальный отчёт", "endpoint": "index", "icon": "upload"},
+    {"label": "Сводный отчёт + сверка", "endpoint": "summary_form", "icon": "git-compare"},
+    {"label": "Алерты", "endpoint": None, "icon": "bell"},
+]
 
 
 # ---------------------------------------------------------------------------
@@ -84,147 +119,28 @@ def requires_auth(f):
     return decorated
 
 
+@app.context_processor
+def inject_shell_context():
+    """Общие данные оболочки (header + sidebar) для всех шаблонов.
+
+    current_project/unread_alerts — заглушки до миграций
+    projects/project_cabinets/alerts (см. текущие приоритеты в вики).
+    """
+    return {
+        "nav_items": NAV_ITEMS,
+        "current_project": None,
+        "unread_alerts": 0,
+    }
+
+
 # ---------------------------------------------------------------------------
-# Templates
+# Routes — дашборд
 # ---------------------------------------------------------------------------
 
-_BASE_STYLE = """
-<style>
-  body { font-family: -apple-system, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
-  nav { margin-bottom: 24px; }
-  nav a { margin-right: 16px; color: #0066cc; }
-  label { display: block; margin-top: 16px; font-weight: 600; }
-  input[type=text] { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; }
-  input[type=submit] { margin-top: 24px; padding: 10px 24px; cursor: pointer; }
-  .error { color: #c00; margin-top: 16px; }
-  .ok    { color: #080; }
-  .warn  { color: #a60; }
-  .hint  { color: #666; font-size: 0.9em; }
-  pre    { background: #f5f5f5; padding: 12px; overflow-x: auto; white-space: pre-wrap; }
-  table  { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 0.9em; }
-  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
-  th     { background: #f0f0f0; }
-  tr.fail { background: #fff0f0; }
-</style>
-"""
-
-_NAV = """
-<nav>
-  <a href="./">Детальный отчёт</a>
-  <a href="summary">Сводный отчёт + сверка</a>
-</nav>
-"""
-
-FORM_HTML = """
-<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Загрузка детальных отчётов WB</title>{{ style }}</head>
-<body>
-  {{ nav }}
-  <h1>Загрузка детальных отчётов WB</h1>
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
-  <form action="upload" method="post" enctype="multipart/form-data">
-    <label for="cabinet">Кабинет</label>
-    <input type="text" id="cabinet" name="cabinet" list="cabinets"
-           placeholder="Например: AcmeShop" autocomplete="off" required>
-    <datalist id="cabinets">
-      {% for c in cabinets %}<option value="{{ c }}">{% endfor %}
-    </datalist>
-    <p class="hint">Название кабинета — как в отчётах WB.</p>
-
-    <label for="files">Файлы детальных отчётов (.xlsx)</label>
-    <input type="file" id="files" name="files" accept=".xlsx" multiple required>
-
-    <input type="submit" value="Загрузить">
-  </form>
-</body></html>
-"""
-
-RESULT_HTML = """
-<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Результат загрузки</title>{{ style }}</head>
-<body>
-  {{ nav }}
-  <h1>Результат загрузки</h1>
-  {% if error %}
-    <p class="error">Ошибка: {{ error }}</p>
-  {% else %}
-    <p class="ok">Загружено файлов: {{ summary.files }}, строк: {{ summary.rows }}</p>
-    {% if summary.unmapped_columns %}
-      <p class="warn">Встречены колонки не из column_mapping_wb.yaml:</p>
-      <ul>{% for c in summary.unmapped_columns %}<li>{{ c }}</li>{% endfor %}</ul>
-      <p class="warn">Данные сохранены в extra_columns. Обновите маппинг при необходимости.</p>
-    {% endif %}
-  {% endif %}
-  {% if logs %}<pre>{{ logs|join('\n') }}</pre>{% endif %}
-  <a href="./">← Загрузить ещё</a>
-</body></html>
-"""
-
-SUMMARY_FORM_HTML = """
-<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Сводный отчёт WB + сверка</title>{{ style }}</head>
-<body>
-  {{ nav }}
-  <h1>Загрузка сводного отчёта + сверка</h1>
-  <p class="hint">Загрузите «Еженедельный сводный отчёт» (xlsx). Данные сохранятся
-  в wb_report_summary, после чего автоматически запустится сверка с wb_reports.</p>
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
-  <form action="upload-summary" method="post" enctype="multipart/form-data">
-    <label for="cabinet">Кабинет</label>
-    <input type="text" id="cabinet" name="cabinet" list="cabinets"
-           placeholder="Например: AcmeShop" autocomplete="off" required>
-    <datalist id="cabinets">
-      {% for c in cabinets %}<option value="{{ c }}">{% endfor %}
-    </datalist>
-
-    <label for="file">Файл сводного отчёта (.xlsx)</label>
-    <input type="file" id="file" name="file" accept=".xlsx" required>
-
-    <input type="submit" value="Загрузить и сверить">
-  </form>
-</body></html>
-"""
-
-SUMMARY_RESULT_HTML = """
-<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Результат сверки</title>{{ style }}</head>
-<body>
-  {{ nav }}
-  <h1>Результат загрузки и сверки</h1>
-  {% if error %}
-    <p class="error">Ошибка: {{ error }}</p>
-  {% else %}
-    <p class="ok">Загружено строк в wb_report_summary: {{ ingest_rows }}</p>
-    <p>Проверок: <b>{{ total }}</b> &nbsp;|&nbsp;
-       Расхождений: <b {% if failed > 0 %}class="error"{% else %}class="ok"{% endif %}>{{ failed }}</b>
-    </p>
-
-    {% if failed == 0 %}
-      <p class="ok">Все поля в пределах допуска.</p>
-    {% else %}
-      <h2>Расхождения</h2>
-      <table>
-        <tr><th>№ отчёта</th><th>Тип</th><th>Период</th><th>Поле</th>
-            <th>Сводный</th><th>ClickHouse</th><th>Разница</th><th>Допуск</th></tr>
-        {% for r in failures %}
-        <tr class="fail">
-          <td>{{ r.report_number }}</td>
-          <td>{{ r.report_type }}</td>
-          <td>{{ r.period_start }} — {{ r.period_end }}</td>
-          <td>{{ r.field_name }}</td>
-          <td>{{ "%.2f"|format(r.expected_value) }}</td>
-          <td>{{ "%.2f"|format(r.actual_value) }}</td>
-          <td>{{ "%.2f"|format(r.diff) }}</td>
-          <td>{{ r.tolerance }}</td>
-        </tr>
-        {% endfor %}
-      </table>
-    {% endif %}
-  {% endif %}
-  {% if logs %}<pre>{{ logs|join('\n') }}</pre>{% endif %}
-  <a href="summary">← Загрузить ещё</a>
-</body></html>
-"""
+@app.route("/dashboard", methods=["GET"])
+@requires_auth
+def dashboard():
+    return render_template("dashboard.html", cabinets=get_cabinets())
 
 
 # ---------------------------------------------------------------------------
@@ -234,10 +150,7 @@ SUMMARY_RESULT_HTML = """
 @app.route("/", methods=["GET"])
 @requires_auth
 def index():
-    return render_template_string(
-        FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-        error=None, cabinets=get_cabinets(),
-    )
+    return render_template("detail_form.html", error=None, cabinets=get_cabinets())
 
 
 @app.route("/upload", methods=["POST"])
@@ -247,14 +160,12 @@ def upload():
     files = request.files.getlist("files")
 
     if not cabinet:
-        return render_template_string(
-            FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Укажите кабинет", cabinets=get_cabinets(),
+        return render_template(
+            "detail_form.html", error="Укажите кабинет", cabinets=get_cabinets(),
         ), 400
     if not files or all(f.filename == "" for f in files):
-        return render_template_string(
-            FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Выберите хотя бы один файл", cabinets=get_cabinets(),
+        return render_template(
+            "detail_form.html", error="Выберите хотя бы один файл", cabinets=get_cabinets(),
         ), 400
 
     saved_paths, skipped = [], []
@@ -268,9 +179,8 @@ def upload():
         saved_paths.append(dest)
 
     if not saved_paths:
-        return render_template_string(
-            FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Ни одного .xlsx файла не найдено", cabinets=get_cabinets(),
+        return render_template(
+            "detail_form.html", error="Ни одного .xlsx файла не найдено", cabinets=get_cabinets(),
         ), 400
 
     logs = []
@@ -280,18 +190,14 @@ def upload():
     try:
         summary = ingest_files(saved_paths, cabinet, log=logs.append)
     except Exception as e:
-        return render_template_string(
-            RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
-            error=str(e), summary=None, logs=logs,
+        return render_template(
+            "detail_result.html", error=str(e), summary=None, logs=logs,
         ), 500
     finally:
         for p in saved_paths:
             p.unlink(missing_ok=True)
 
-    return render_template_string(
-        RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
-        error=None, summary=summary, logs=logs,
-    )
+    return render_template("detail_result.html", error=None, summary=summary, logs=logs)
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +207,7 @@ def upload():
 @app.route("/summary", methods=["GET"])
 @requires_auth
 def summary_form():
-    return render_template_string(
-        SUMMARY_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-        error=None, cabinets=get_cabinets(),
-    )
+    return render_template("summary_form.html", error=None, cabinets=get_cabinets())
 
 
 @app.route("/upload-summary", methods=["POST"])
@@ -314,21 +217,18 @@ def upload_summary():
     f = request.files.get("file")
 
     if not cabinet:
-        return render_template_string(
-            SUMMARY_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Укажите кабинет", cabinets=get_cabinets(),
+        return render_template(
+            "summary_form.html", error="Укажите кабинет", cabinets=get_cabinets(),
         ), 400
     if not f or f.filename == "":
-        return render_template_string(
-            SUMMARY_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Выберите файл", cabinets=get_cabinets(),
+        return render_template(
+            "summary_form.html", error="Выберите файл", cabinets=get_cabinets(),
         ), 400
 
     filename = safe_filename(f.filename)
     if not filename.lower().endswith(".xlsx"):
-        return render_template_string(
-            SUMMARY_FORM_HTML, style=_BASE_STYLE, nav=_NAV,
-            error="Файл должен быть .xlsx", cabinets=get_cabinets(),
+        return render_template(
+            "summary_form.html", error="Файл должен быть .xlsx", cabinets=get_cabinets(),
         ), 400
 
     dest = UPLOAD_DIR / filename
@@ -340,9 +240,8 @@ def upload_summary():
         client = get_client()
         reconcile_rows = run_reconciliation(client, cabinet, log=logs.append)
     except Exception as e:
-        return render_template_string(
-            SUMMARY_RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
-            error=str(e), ingest_rows=0, total=0, failed=0,
+        return render_template(
+            "summary_result.html", error=str(e), ingest_rows=0, total=0, failed=0,
             failures=[], logs=logs,
         ), 500
     finally:
@@ -356,8 +255,8 @@ def upload_summary():
     rows_as_dicts = [dict(zip(FIELDS, r)) for r in reconcile_rows]
     failures = [r for r in rows_as_dicts if not r["is_ok"]]
 
-    return render_template_string(
-        SUMMARY_RESULT_HTML, style=_BASE_STYLE, nav=_NAV,
+    return render_template(
+        "summary_result.html",
         error=None,
         ingest_rows=ingest_result["rows"],
         total=len(rows_as_dicts),
