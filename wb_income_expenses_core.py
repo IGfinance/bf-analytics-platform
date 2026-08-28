@@ -7,7 +7,6 @@
 import re
 from datetime import date
 from pathlib import Path
-from typing import Callable
 
 import openpyxl
 from dotenv import load_dotenv
