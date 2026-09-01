@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — bf-analytics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="bg-page text-primary font-sans min-h-screen flex items-center justify-center">
+
+  <form action="{{ url_for('login') }}" method="post"
+        class="bg-surface border border-border rounded-2xl p-8 w-full max-w-sm">
+    <h1 class="text-2xl font-bold font-montserrat">bf-analytics</h1>
+    <p class="text-sm text-secondary mt-1">Войдите, чтобы продолжить</p>
+
+    {% if error %}
+      <p class="mt-4 text-sm text-danger">{{ error }}</p>
+    {% endif %}
+
+    <div class="mt-6">
+      <label for="email" class="text-sm font-semibold">Email</label>
+      <input type="email" id="email" name="email" required autofocus
+             class="block w-full mt-2 px-3 py-2 rounded-lg border border-border bg-page text-sm">
+    </div>
+
+    <div class="mt-4">
+      <label for="password" class="text-sm font-semibold">Пароль</label>
+      <input type="password" id="password" name="password" required
+             class="block w-full mt-2 px-3 py-2 rounded-lg border border-border bg-page text-sm">
+    </div>
+
+    <button type="submit"
+            class="mt-6 w-full bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium transition-colors duration-150">
+      Войти
+    </button>
+  </form>
+
+</body>
+</html>

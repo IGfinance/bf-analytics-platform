@@ -4,3 +4,4 @@ pyyaml
 clickhouse-connect
 python-dotenv
 flask
+flask-login

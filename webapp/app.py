@@ -8,33 +8,44 @@
   GET  /summary   — форма загрузки сводного отчёта
   POST /upload-summary — обработка сводного отчёта + сверка
   GET  /dashboard — обзор кабинетов
+  GET/POST /login — вход
+  POST /logout    — выход
 
-Логин/пароль берутся из .env (WEBAPP_USER / WEBAPP_PASSWORD).
+Вход — по email/паролю сотрудника (таблица users), через Flask-Login.
+Первого пользователя заводит scripts/create_user.py.
 """
 
+import logging
 import ntpath
 import os
 import posixpath
 import sys
-from functools import wraps
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, render_template, request
+from flask import Flask, redirect, render_template, request, url_for
+from flask_login import current_user, login_required, login_user, logout_user
 
 WEBAPP_DIR = Path(__file__).parent
 CLICKHOUSE_DIR = WEBAPP_DIR.parent
 sys.path.insert(0, str(CLICKHOUSE_DIR))
 
 load_dotenv(CLICKHOUSE_DIR / ".env")   # реквизиты ClickHouse
-load_dotenv(WEBAPP_DIR / ".env")       # логин/пароль формы (может переопределить)
+load_dotenv(WEBAPP_DIR / ".env")       # секреты веб-формы (может переопределить)
 
 from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
 from reconcile_wb import run_reconciliation            # noqa: E402
+from auth import authenticate, login_manager            # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("webapp")
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 МБ на запрос
+
+app.secret_key = os.environ["FLASK_SECRET_KEY"]
+login_manager.init_app(app)
 
 
 class PrefixMiddleware:
@@ -98,27 +109,6 @@ def get_cabinets() -> list[str]:
         return []
 
 
-def check_auth(username, password):
-    expected_user = os.environ.get("WEBAPP_USER", "admin")
-    expected_password = os.environ.get("WEBAPP_PASSWORD")
-    if not expected_password:
-        raise RuntimeError("WEBAPP_PASSWORD не задан в .env")
-    return username == expected_user and password == expected_password
-
-
-def requires_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return Response(
-                "Требуется авторизация", 401,
-                {"WWW-Authenticate": 'Basic realm="Finance Black reports upload"'},
-            )
-        return f(*args, **kwargs)
-    return decorated
-
-
 @app.context_processor
 def inject_shell_context():
     """Общие данные оболочки (header + sidebar) для всех шаблонов.
@@ -134,11 +124,43 @@ def inject_shell_context():
 
 
 # ---------------------------------------------------------------------------
+# Routes — вход/выход
+# ---------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
+
+    if request.method == "GET":
+        return render_template("login.html", error=None)
+
+    email = request.form.get("email", "").strip()
+    password = request.form.get("password", "")
+    user = authenticate(email, password)
+    if not user:
+        log.warning("Неудачная попытка входа email=%s", email)
+        return render_template("login.html", error="Неверный email или пароль"), 401
+
+    login_user(user)
+    log.info("Вход выполнен: id=%s email=%s", user.id, user.email)
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    log.info("Выход: id=%s email=%s", current_user.id, current_user.email)
+    logout_user()
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
 # Routes — дашборд
 # ---------------------------------------------------------------------------
 
 @app.route("/dashboard", methods=["GET"])
-@requires_auth
+@login_required
 def dashboard():
     return render_template("dashboard.html", cabinets=get_cabinets())
 
@@ -148,13 +170,13 @@ def dashboard():
 # ---------------------------------------------------------------------------
 
 @app.route("/", methods=["GET"])
-@requires_auth
+@login_required
 def index():
     return render_template("detail_form.html", error=None, cabinets=get_cabinets())
 
 
 @app.route("/upload", methods=["POST"])
-@requires_auth
+@login_required
 def upload():
     cabinet = request.form.get("cabinet", "").strip()
     files = request.files.getlist("files")
@@ -205,13 +227,13 @@ def upload():
 # ---------------------------------------------------------------------------
 
 @app.route("/summary", methods=["GET"])
-@requires_auth
+@login_required
 def summary_form():
     return render_template("summary_form.html", error=None, cabinets=get_cabinets())
 
 
 @app.route("/upload-summary", methods=["POST"])
-@requires_auth
+@login_required
 def upload_summary():
     cabinet = request.form.get("cabinet", "").strip()
     f = request.files.get("file")
