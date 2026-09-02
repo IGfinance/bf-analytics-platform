@@ -1,7 +1,7 @@
 {% set field_id = field_id|default("cabinet") %}
 <div>
   <label for="{{ field_id }}" class="text-sm font-semibold">Кабинет</label>
-  <input type="text" id="{{ field_id }}" name="cabinet" list="{{ field_id }}-list"
+  <input type="text" id="{{ field_id }}" list="{{ field_id }}-list" data-cabinet-shared
          placeholder="Например: AcmeShop" autocomplete="off" required
          class="w-full mt-2 bg-page border border-border focus:border-accent focus:outline-none rounded-lg px-3 py-2 text-sm">
   <datalist id="{{ field_id }}-list">

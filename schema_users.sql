@@ -31,3 +31,9 @@ ORDER BY (user_id, project_id);
 -- Существующие строки по умолчанию получают 'wb' — на момент миграции в
 -- project_cabinets есть только кабинеты WB.
 ALTER TABLE project_cabinets ADD COLUMN IF NOT EXISTS platform String DEFAULT 'wb';
+
+-- Имя/фамилия — показываются в шапке и профиле вместо email. Существующие
+-- пользователи получают пустую строку, дозаполняется вручную/через
+-- create_user.py --update.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name String DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name String DEFAULT '';

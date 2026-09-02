@@ -24,26 +24,6 @@
     </div>
 
     <div class="flex items-center gap-2 lg:gap-4">
-      {% if user_projects %}
-        <div class="relative" data-project-switcher>
-          <button type="button" data-project-switcher-toggle
-                  class="flex items-center gap-2 px-3 py-2 rounded-lg border border-border hover:border-border-hover transition-colors duration-150 text-sm font-medium">
-            <span>{{ current_project.name if current_project else "Выбрать проект" }}</span>
-            {% include "icons/chevron-down.svg" %}
-          </button>
-          <div class="hidden absolute right-0 mt-2 w-56 bg-surface border border-border rounded-lg shadow-lg py-1 z-40"
-               data-project-switcher-menu>
-            {% for p in user_projects %}
-              <a href="{{ url_for('project_dashboard', slug=p.slug) }}"
-                 class="block px-3 py-2 text-sm hover:bg-surface-hover transition-colors duration-150
-                        {% if current_project and current_project.slug == p.slug %}text-accent{% else %}text-primary{% endif %}">
-                {{ p.name }}
-              </a>
-            {% endfor %}
-          </div>
-        </div>
-      {% endif %}
-
       {# Алерты — счётчик непрочитанных из таблицы alerts (появится с миграцией) #}
       <button type="button"
               class="relative p-2 rounded-lg text-secondary hover:bg-surface-hover hover:text-primary transition-colors duration-150"
@@ -56,7 +36,7 @@
 
       {% if current_user.is_authenticated %}
         <div class="hidden sm:flex items-center gap-2">
-          <span class="text-sm text-secondary">{{ current_user.email }}</span>
+          <span class="text-sm text-secondary">{{ current_user.full_name }}</span>
           <form action="{{ url_for('logout') }}" method="post">
             <button type="submit"
                     class="text-sm font-medium text-secondary hover:text-primary transition-colors duration-150">
@@ -94,7 +74,7 @@
     {% if current_user.is_authenticated %}
       <form action="{{ url_for('logout') }}" method="post" class="px-3 pt-2 sm:hidden">
         <button type="submit" class="text-sm font-medium text-secondary hover:text-primary transition-colors duration-150">
-          Выйти ({{ current_user.email }})
+          Выйти ({{ current_user.full_name }})
         </button>
       </form>
     {% endif %}

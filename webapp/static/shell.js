@@ -7,16 +7,20 @@
     });
   }
 
-  var switcher = document.querySelector('[data-project-switcher]');
-  var switcherToggle = document.querySelector('[data-project-switcher-toggle]');
-  var switcherMenu = document.querySelector('[data-project-switcher-menu]');
-  if (switcher && switcherToggle && switcherMenu) {
-    switcherToggle.addEventListener('click', function (e) {
-      e.stopPropagation();
-      switcherMenu.classList.toggle('hidden');
+  var projectSelect = document.querySelector('[data-project-select]');
+  if (projectSelect) {
+    projectSelect.addEventListener('change', function () {
+      if (this.value) window.location = this.value;
     });
-    document.addEventListener('click', function (e) {
-      if (!switcher.contains(e.target)) switcherMenu.classList.add('hidden');
-    });
+  }
+
+  var cabinetShared = document.querySelector('[data-cabinet-shared]');
+  var cabinetMirrors = document.querySelectorAll('[data-cabinet-mirror]');
+  if (cabinetShared && cabinetMirrors.length) {
+    var syncCabinet = function () {
+      cabinetMirrors.forEach(function (m) { m.value = cabinetShared.value; });
+    };
+    cabinetShared.addEventListener('input', syncCabinet);
+    syncCabinet();
   }
 })();

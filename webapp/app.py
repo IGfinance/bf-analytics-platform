@@ -296,46 +296,11 @@ def home():
 # Routes — дашборд проекта
 # ---------------------------------------------------------------------------
 
-RECONCILIATION_FIELDS = [
-    "cabinet", "report_number", "report_type", "period_start", "period_end",
-    "field_name", "expected_value", "actual_value", "diff", "tolerance", "is_ok", "status",
-]
-
-
-def get_reconciliation_state(cabinets: list[str]) -> dict:
-    """Текущее состояние последней сверки (wb_reconciliation_results) по кабинетам.
-
-    При ошибке ClickHouse — total/failed=0, error заполнен для показа в шаблоне.
-    """
-    if not cabinets:
-        return {"error": None, "total": 0, "failed": 0, "failures": []}
-    try:
-        client = get_client()
-        rows = client.query(
-            f"""
-            SELECT {', '.join(RECONCILIATION_FIELDS)}
-            FROM wb_reconciliation_results FINAL
-            WHERE cabinet IN {{cabinets:Array(String)}}
-            ORDER BY cabinet, report_number, field_name
-            """,
-            parameters={"cabinets": cabinets},
-        ).result_rows
-    except Exception as e:
-        return {"error": str(e), "total": 0, "failed": 0, "failures": []}
-
-    rows_as_dicts = [dict(zip(RECONCILIATION_FIELDS, r)) for r in rows]
-    failures = [r for r in rows_as_dicts if not r["is_ok"]]
-    return {"error": None, "total": len(rows_as_dicts), "failed": len(failures), "failures": failures}
-
-
 @app.route("/p/<slug>/", methods=["GET"])
 @login_required
 @project_access_required
 def project_dashboard(slug):
-    cabinets = get_project_cabinets(g.project["id"])
-    return render_template(
-        "dashboard.html", cabinets=cabinets, reconciliation=get_reconciliation_state(cabinets),
-    )
+    return render_template("dashboard.html", cabinets=get_project_cabinets(g.project["id"]))
 
 
 # ---------------------------------------------------------------------------

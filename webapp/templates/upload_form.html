@@ -6,67 +6,40 @@
   <h1 class="text-2xl font-bold font-montserrat">Загрузка отчётов</h1>
   {% include "partials/error_banner.html" %}
 
-  <div class="grid gap-6 mt-6 lg:grid-cols-2">
-    {% if has_wb %}
-    <div class="bg-surface border border-border rounded-2xl p-6">
-      <h2 class="text-lg font-bold font-montserrat">Детальный отчёт WB</h2>
-      <form action="{{ url_for('upload_detail', slug=slug) }}" method="post" enctype="multipart/form-data" class="mt-4">
-        {% set field_id = "cabinet-detail" %}
-        {% include "partials/cabinet_field.html" %}
-
-        <div class="mt-4">
-          <label for="files" class="text-sm font-semibold">Файлы детальных отчётов (.xlsx)</label>
-          <input type="file" id="files" name="files" accept=".xlsx" multiple required
-                 class="block w-full mt-2 text-sm text-secondary
-                        file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
-                        file:bg-accent file:text-white file:font-medium file:cursor-pointer
-                        hover:file:bg-accent-hover">
-        </div>
-
-        <button type="submit"
-                class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium transition-colors duration-150">
-          Загрузить
-        </button>
-      </form>
+  {% if has_wb %}
+    <div class="bg-surface border border-border rounded-2xl p-6 mt-6 max-w-sm">
+      {% set field_id = "cabinet-shared" %}
+      {% include "partials/cabinet_field.html" %}
     </div>
 
-    <div class="bg-surface border border-border rounded-2xl p-6">
-      <h2 class="text-lg font-bold font-montserrat">Сводный отчёт + сверка</h2>
-      <p class="text-sm text-secondary mt-1">
-        Загрузите «Еженедельный сводный отчёт» (xlsx). Данные сохранятся в
-        wb_report_summary, после чего автоматически запустится сверка с wb_reports.
-      </p>
-      <form action="{{ url_for('upload_summary', slug=slug) }}" method="post" enctype="multipart/form-data" class="mt-4">
-        {% set field_id = "cabinet-summary" %}
-        {% include "partials/cabinet_field.html" %}
+    <div class="grid gap-6 mt-6 lg:grid-cols-2">
+      {% set card_title = "Детальный отчёт WB" %}
+      {% set card_description = "Загрузите файлы детальных отчётов (xlsx) — данные сохранятся в wb_reports." %}
+      {% set card_action = url_for('upload_detail', slug=slug) %}
+      {% set card_input_id = "files-detail" %}
+      {% set card_input_name = "files" %}
+      {% set card_multiple = true %}
+      {% include "partials/upload_card.html" %}
 
-        <div class="mt-4">
-          <label for="file" class="text-sm font-semibold">Файл сводного отчёта (.xlsx)</label>
-          <input type="file" id="file" name="file" accept=".xlsx" required
-                 class="block w-full mt-2 text-sm text-secondary
-                        file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
-                        file:bg-accent file:text-white file:font-medium file:cursor-pointer
-                        hover:file:bg-accent-hover">
-        </div>
-
-        <button type="submit"
-                class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium transition-colors duration-150">
-          Загрузить и сверить
-        </button>
-      </form>
+      {% set card_title = "Сводный отчёт + сверка" %}
+      {% set card_description = "Загрузите «Еженедельный сводный отчёт» (xlsx) — данные сохранятся в wb_report_summary, автоматически запустится сверка с wb_reports." %}
+      {% set card_action = url_for('upload_summary', slug=slug) %}
+      {% set card_input_id = "file-summary" %}
+      {% set card_input_name = "file" %}
+      {% set card_multiple = false %}
+      {% include "partials/upload_card.html" %}
     </div>
-    {% else %}
-    <div class="bg-surface border border-border rounded-2xl p-6 text-sm text-secondary">
+  {% else %}
+    <div class="bg-surface border border-border rounded-2xl p-6 mt-6 text-sm text-secondary">
       У проекта нет кабинетов WB — загрузка недоступна. Добавьте кабинет с
       <code>platform='wb'</code> в project_cabinets.
     </div>
-    {% endif %}
+  {% endif %}
 
-    {% for p in other_platforms %}
-    <div class="bg-surface border border-border rounded-2xl p-6 opacity-50">
+  {% for p in other_platforms %}
+    <div class="bg-surface border border-border rounded-2xl p-6 mt-6 opacity-50">
       <h2 class="text-lg font-bold font-montserrat">{{ p|upper }}</h2>
       <p class="text-sm text-secondary mt-1">Площадка пока не поддерживается — адаптер загрузки ещё не реализован.</p>
     </div>
-    {% endfor %}
-  </div>
+  {% endfor %}
 {% endblock %}
