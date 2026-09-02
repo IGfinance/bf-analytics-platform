@@ -24,7 +24,7 @@
 
   {% include "partials/log_output.html" %}
 
-  <a href="{{ url_for('index') }}" class="inline-block mt-6 text-accent hover:text-accent-hover text-sm font-medium transition-colors duration-150">
+  <a href="{{ url_for('upload_page', slug=slug) }}" class="inline-block mt-6 text-accent hover:text-accent-hover text-sm font-medium transition-colors duration-150">
     ← Загрузить ещё
   </a>
 {% endblock %}

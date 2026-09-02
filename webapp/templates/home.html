@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Мои проекты{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-bold font-montserrat">Мои проекты</h1>
+
+  {% if projects %}
+    <div class="grid gap-4 mt-6 sm:grid-cols-2 lg:grid-cols-3">
+      {% for p in projects %}
+        <a href="{{ url_for('project_dashboard', slug=p.slug) }}"
+           class="bg-surface border border-border rounded-2xl p-6 hover:border-border-hover transition-colors duration-150">
+          <h2 class="text-lg font-bold font-montserrat">{{ p.name }}</h2>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="text-sm text-secondary mt-4">
+      Вам пока не выдан доступ ни к одному проекту. Обратитесь к администратору.
+    </p>
+  {% endif %}
+{% endblock %}

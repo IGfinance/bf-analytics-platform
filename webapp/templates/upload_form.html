@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Загрузка отчётов{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-bold font-montserrat">Загрузка отчётов</h1>
+  {% include "partials/error_banner.html" %}
+
+  <div class="grid gap-6 mt-6 lg:grid-cols-2">
+    <div class="bg-surface border border-border rounded-2xl p-6">
+      <h2 class="text-lg font-bold font-montserrat">Детальный отчёт WB</h2>
+      <form action="{{ url_for('upload_detail', slug=slug) }}" method="post" enctype="multipart/form-data" class="mt-4">
+        {% set field_id = "cabinet-detail" %}
+        {% include "partials/cabinet_field.html" %}
+
+        <div class="mt-4">
+          <label for="files" class="text-sm font-semibold">Файлы детальных отчётов (.xlsx)</label>
+          <input type="file" id="files" name="files" accept=".xlsx" multiple required
+                 class="block w-full mt-2 text-sm text-secondary
+                        file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+                        file:bg-accent file:text-white file:font-medium file:cursor-pointer
+                        hover:file:bg-accent-hover">
+        </div>
+
+        <button type="submit"
+                class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium transition-colors duration-150">
+          Загрузить
+        </button>
+      </form>
+    </div>
+
+    <div class="bg-surface border border-border rounded-2xl p-6">
+      <h2 class="text-lg font-bold font-montserrat">Сводный отчёт + сверка</h2>
+      <p class="text-sm text-secondary mt-1">
+        Загрузите «Еженедельный сводный отчёт» (xlsx). Данные сохранятся в
+        wb_report_summary, после чего автоматически запустится сверка с wb_reports.
+      </p>
+      <form action="{{ url_for('upload_summary', slug=slug) }}" method="post" enctype="multipart/form-data" class="mt-4">
+        {% set field_id = "cabinet-summary" %}
+        {% include "partials/cabinet_field.html" %}
+
+        <div class="mt-4">
+          <label for="file" class="text-sm font-semibold">Файл сводного отчёта (.xlsx)</label>
+          <input type="file" id="file" name="file" accept=".xlsx" required
+                 class="block w-full mt-2 text-sm text-secondary
+                        file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+                        file:bg-accent file:text-white file:font-medium file:cursor-pointer
+                        hover:file:bg-accent-hover">
+        </div>
+
+        <button type="submit"
+                class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium transition-colors duration-150">
+          Загрузить и сверить
+        </button>
+      </form>
+    </div>
+  </div>
+{% endblock %}

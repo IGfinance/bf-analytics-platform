@@ -1,17 +1,21 @@
 {% extends "base.html" %}
 
-{% block title %}Результат сверки{% endblock %}
+{% block title %}Тесты загрузки{% endblock %}
 
 {% block content %}
-  <h1 class="text-2xl font-bold font-montserrat">Результат загрузки и сверки</h1>
+  <h1 class="text-2xl font-bold font-montserrat">Тесты загрузки</h1>
+  <p class="text-sm text-secondary mt-1">
+    Текущее состояние последней сверки сводного отчёта с сырыми данными по кабинетам проекта.
+  </p>
 
   {% if error %}
     <p class="mt-4 text-sm text-danger">Ошибка: {{ error }}</p>
+  {% elif not has_cabinets %}
+    <p class="mt-4 text-sm text-secondary">В проекте нет зарегистрированных кабинетов.</p>
+  {% elif total == 0 %}
+    <p class="mt-4 text-sm text-secondary">Сверка ещё не запускалась ни для одного кабинета проекта.</p>
   {% else %}
-    <p class="mt-4 text-sm text-success-text">
-      Загружено строк в wb_report_summary: {{ ingest_rows }}
-    </p>
-    <p class="mt-2 text-sm">
+    <p class="mt-4 text-sm">
       Проверок: <span class="font-semibold">{{ total }}</span>
       &nbsp;|&nbsp;
       Расхождений:
@@ -29,6 +33,7 @@
           <table class="w-full text-sm">
             <thead class="bg-surface text-secondary uppercase text-xs">
               <tr>
+                <th class="px-4 py-3 text-left font-semibold">Кабинет</th>
                 <th class="px-4 py-3 text-left font-semibold">№ отчёта</th>
                 <th class="px-4 py-3 text-left font-semibold">Тип</th>
                 <th class="px-4 py-3 text-left font-semibold">Период</th>
@@ -36,20 +41,21 @@
                 <th class="px-4 py-3 text-left font-semibold">Сводный</th>
                 <th class="px-4 py-3 text-left font-semibold">ClickHouse</th>
                 <th class="px-4 py-3 text-left font-semibold">Разница</th>
-                <th class="px-4 py-3 text-left font-semibold">Допуск</th>
+                <th class="px-4 py-3 text-left font-semibold">Статус</th>
               </tr>
             </thead>
             <tbody>
               {% for r in failures %}
               <tr class="border-b border-border last:border-0 hover:bg-surface-hover transition-colors duration-150">
+                <td class="px-4 py-3">{{ r.cabinet }}</td>
                 <td class="px-4 py-3">{{ r.report_number }}</td>
                 <td class="px-4 py-3">{{ r.report_type }}</td>
                 <td class="px-4 py-3">{{ r.period_start }} — {{ r.period_end }}</td>
                 <td class="px-4 py-3">{{ r.field_name }}</td>
-                <td class="px-4 py-3">{{ "%.2f"|format(r.expected_value) }}</td>
-                <td class="px-4 py-3">{{ "%.2f"|format(r.actual_value) }}</td>
-                <td class="px-4 py-3 text-danger">{{ "%.2f"|format(r.diff) }}</td>
-                <td class="px-4 py-3">{{ r.tolerance }}</td>
+                <td class="px-4 py-3">{{ "%.2f"|format(r.expected_value) if r.expected_value is not none else "—" }}</td>
+                <td class="px-4 py-3">{{ "%.2f"|format(r.actual_value) if r.actual_value is not none else "—" }}</td>
+                <td class="px-4 py-3 text-danger">{{ "%.2f"|format(r.diff) if r.diff is not none else "—" }}</td>
+                <td class="px-4 py-3">{{ r.status }}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -58,10 +64,4 @@
       </div>
     {% endif %}
   {% endif %}
-
-  {% include "partials/log_output.html" %}
-
-  <a href="{{ url_for('upload_page', slug=slug) }}" class="inline-block mt-6 text-accent hover:text-accent-hover text-sm font-medium transition-colors duration-150">
-    ← Загрузить ещё
-  </a>
 {% endblock %}

@@ -5,7 +5,7 @@
   <nav class="p-3 space-y-1">
     {% for item in nav_items %}
       {% if item.endpoint %}
-        <a href="{{ url_for(item.endpoint) }}"
+        <a href="{{ url_for(item.endpoint, slug=request.view_args.get('slug')) }}"
            class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
                   {% if request.endpoint == item.endpoint %}bg-accent/15 text-accent{% else %}text-secondary hover:bg-surface-hover hover:text-primary{% endif %}">
           {% include "icons/" + item.icon + ".svg" %}

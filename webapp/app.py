@@ -3,18 +3,21 @@
 Веб-форма для ручной загрузки отчётов WB в ClickHouse.
 
 Маршруты:
-  GET  /          — форма загрузки детального отчёта
-  POST /upload    — обработка детального отчёта
-  GET  /summary   — форма загрузки сводного отчёта
-  POST /upload-summary — обработка сводного отчёта + сверка
-  GET  /dashboard — обзор кабинетов
+  GET  /                    — кабинет пользователя: список доступных проектов
+  GET  /p/<slug>/           — дашборд проекта (кабинеты)
+  GET  /p/<slug>/upload     — форма загрузки отчётов
+  POST /p/<slug>/upload/detail  — обработка детального отчёта
+  POST /p/<slug>/upload/summary — обработка сводного отчёта + сверка
+  GET  /p/<slug>/tests      — текущее состояние сверки по кабинетам проекта
   GET/POST /login — вход
   POST /logout    — выход
 
 Вход — по email/паролю сотрудника (таблица users), через Flask-Login.
-Первого пользователя заводит scripts/create_user.py.
+Первого пользователя заводит scripts/create_user.py. Доступ к проекту —
+через таблицу user_projects, её выдаёт scripts/create_user.py --project.
 """
 
+import functools
 import logging
 import ntpath
 import os
@@ -23,7 +26,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, abort, g, redirect, render_template, request, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
 WEBAPP_DIR = Path(__file__).parent
@@ -75,12 +78,12 @@ if URL_PREFIX:
 UPLOAD_DIR = WEBAPP_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Единый источник навигации оболочки — endpoint=None рендерится как
-# отключённый пункт (фича ещё не реализована), а не мёртвая ссылка.
-NAV_ITEMS = [
-    {"label": "Дашборд", "endpoint": "dashboard", "icon": "layout-dashboard"},
-    {"label": "Детальный отчёт", "endpoint": "index", "icon": "upload"},
-    {"label": "Сводный отчёт + сверка", "endpoint": "summary_form", "icon": "git-compare"},
+# Навигация внутри проекта — endpoint=None рендерится как отключённый пункт
+# (фича ещё не реализована), а не мёртвая ссылка. Требует g.project (slug).
+PROJECT_NAV_ITEMS = [
+    {"label": "Дашборд", "endpoint": "project_dashboard", "icon": "layout-dashboard"},
+    {"label": "Загрузка отчётов", "endpoint": "upload_page", "icon": "upload"},
+    {"label": "Тесты загрузки", "endpoint": "tests_page", "icon": "git-compare"},
     {"label": "Алерты", "endpoint": None, "icon": "bell"},
 ]
 
@@ -97,28 +100,99 @@ def safe_filename(filename: str) -> str:
     return filename
 
 
-def get_cabinets() -> list[str]:
-    """Возвращает список уникальных кабинетов из wb_reports. При ошибке — []."""
+def get_user_projects(user_id: int) -> list[dict]:
+    """Проекты, доступные пользователю (через user_projects). При ошибке — []."""
     try:
         client = get_client()
         rows = client.query(
-            "SELECT DISTINCT cabinet FROM wb_reports FINAL ORDER BY cabinet"
+            """
+            SELECT p.id, p.slug, p.name
+            FROM user_projects AS up
+            INNER JOIN projects AS p ON p.id = up.project_id
+            WHERE up.user_id = {user_id:UInt32}
+            ORDER BY p.name
+            """,
+            parameters={"user_id": int(user_id)},
         ).result_rows
-        return [r[0] for r in rows if r[0]]
     except Exception:
+        log.exception("Не удалось получить проекты пользователя id=%s", user_id)
         return []
+    return [{"id": r[0], "slug": r[1], "name": r[2]} for r in rows]
+
+
+def get_project_by_slug(slug: str) -> dict | None:
+    try:
+        client = get_client()
+        rows = client.query(
+            "SELECT id, slug, name FROM projects FINAL WHERE slug = {slug:String}",
+            parameters={"slug": slug},
+        ).result_rows
+    except Exception:
+        log.exception("Не удалось получить проект slug=%s", slug)
+        return None
+    if not rows:
+        return None
+    return {"id": rows[0][0], "slug": rows[0][1], "name": rows[0][2]}
+
+
+def user_has_project_access(user_id: int, project_id: int) -> bool:
+    try:
+        client = get_client()
+        count = client.query(
+            "SELECT count() FROM user_projects WHERE user_id = {uid:UInt32} AND project_id = {pid:UInt32}",
+            parameters={"uid": int(user_id), "pid": int(project_id)},
+        ).result_rows[0][0]
+    except Exception:
+        log.exception(
+            "Не удалось проверить доступ user_id=%s project_id=%s", user_id, project_id
+        )
+        return False
+    return count > 0
+
+
+def get_project_cabinets(project_id: int) -> list[str]:
+    """Кабинеты, зарегистрированные за проектом. При ошибке — []."""
+    try:
+        client = get_client()
+        rows = client.query(
+            "SELECT cabinet FROM project_cabinets FINAL WHERE project_id = {pid:UInt32} ORDER BY cabinet",
+            parameters={"pid": int(project_id)},
+        ).result_rows
+        return [r[0] for r in rows]
+    except Exception:
+        log.exception("Не удалось получить кабинеты проекта id=%s", project_id)
+        return []
+
+
+def project_access_required(view):
+    """Резолвит slug из URL в g.project и проверяет доступ через user_projects.
+
+    404 — проекта с таким slug нет, 403 — есть, но не выдан доступ.
+    Должен идти после @login_required (нужен current_user).
+    """
+    @functools.wraps(view)
+    def wrapped(*args, slug, **kwargs):
+        project = get_project_by_slug(slug)
+        if project is None:
+            abort(404)
+        if not user_has_project_access(int(current_user.id), project["id"]):
+            abort(403)
+        g.project = project
+        return view(*args, slug=slug, **kwargs)
+    return wrapped
 
 
 @app.context_processor
 def inject_shell_context():
     """Общие данные оболочки (header + sidebar) для всех шаблонов.
 
-    current_project/unread_alerts — заглушки до миграций
-    projects/project_cabinets/alerts (см. текущие приоритеты в вики).
+    nav_items/current_project пусты вне проекта (например, на кабинете
+    пользователя). unread_alerts — заглушка до миграции alerts.
     """
+    project = g.get("project")
     return {
-        "nav_items": NAV_ITEMS,
-        "current_project": None,
+        "nav_items": PROJECT_NAV_ITEMS if project else [],
+        "current_project": project["name"] if project else None,
         "unread_alerts": 0,
     }
 
@@ -130,7 +204,7 @@ def inject_shell_context():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("home"))
 
     if request.method == "GET":
         return render_template("login.html", error=None)
@@ -144,7 +218,7 @@ def login():
 
     login_user(user)
     log.info("Вход выполнен: id=%s email=%s", user.id, user.email)
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("home"))
 
 
 @app.route("/logout", methods=["POST"])
@@ -156,38 +230,54 @@ def logout():
 
 
 # ---------------------------------------------------------------------------
-# Routes — дашборд
-# ---------------------------------------------------------------------------
-
-@app.route("/dashboard", methods=["GET"])
-@login_required
-def dashboard():
-    return render_template("dashboard.html", cabinets=get_cabinets())
-
-
-# ---------------------------------------------------------------------------
-# Routes — детальный отчёт
+# Routes — кабинет пользователя
 # ---------------------------------------------------------------------------
 
 @app.route("/", methods=["GET"])
 @login_required
-def index():
-    return render_template("detail_form.html", error=None, cabinets=get_cabinets())
+def home():
+    return render_template("home.html", projects=get_user_projects(int(current_user.id)))
 
 
-@app.route("/upload", methods=["POST"])
+# ---------------------------------------------------------------------------
+# Routes — дашборд проекта
+# ---------------------------------------------------------------------------
+
+@app.route("/p/<slug>/", methods=["GET"])
 @login_required
-def upload():
+@project_access_required
+def project_dashboard(slug):
+    return render_template("dashboard.html", cabinets=get_project_cabinets(g.project["id"]))
+
+
+# ---------------------------------------------------------------------------
+# Routes — загрузка отчётов
+# ---------------------------------------------------------------------------
+
+@app.route("/p/<slug>/upload", methods=["GET"])
+@login_required
+@project_access_required
+def upload_page(slug):
+    return render_template(
+        "upload_form.html", error=None, cabinets=get_project_cabinets(g.project["id"]), slug=slug,
+    )
+
+
+@app.route("/p/<slug>/upload/detail", methods=["POST"])
+@login_required
+@project_access_required
+def upload_detail(slug):
+    cabinets = get_project_cabinets(g.project["id"])
     cabinet = request.form.get("cabinet", "").strip()
     files = request.files.getlist("files")
 
     if not cabinet:
         return render_template(
-            "detail_form.html", error="Укажите кабинет", cabinets=get_cabinets(),
+            "upload_form.html", error="Укажите кабинет", cabinets=cabinets, slug=slug,
         ), 400
     if not files or all(f.filename == "" for f in files):
         return render_template(
-            "detail_form.html", error="Выберите хотя бы один файл", cabinets=get_cabinets(),
+            "upload_form.html", error="Выберите хотя бы один файл", cabinets=cabinets, slug=slug,
         ), 400
 
     saved_paths, skipped = [], []
@@ -202,7 +292,7 @@ def upload():
 
     if not saved_paths:
         return render_template(
-            "detail_form.html", error="Ни одного .xlsx файла не найдено", cabinets=get_cabinets(),
+            "upload_form.html", error="Ни одного .xlsx файла не найдено", cabinets=cabinets, slug=slug,
         ), 400
 
     logs = []
@@ -213,44 +303,38 @@ def upload():
         summary = ingest_files(saved_paths, cabinet, log=logs.append)
     except Exception as e:
         return render_template(
-            "detail_result.html", error=str(e), summary=None, logs=logs,
+            "detail_result.html", error=str(e), summary=None, logs=logs, slug=slug,
         ), 500
     finally:
         for p in saved_paths:
             p.unlink(missing_ok=True)
 
-    return render_template("detail_result.html", error=None, summary=summary, logs=logs)
+    return render_template(
+        "detail_result.html", error=None, summary=summary, logs=logs, slug=slug,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Routes — сводный отчёт + сверка
-# ---------------------------------------------------------------------------
-
-@app.route("/summary", methods=["GET"])
+@app.route("/p/<slug>/upload/summary", methods=["POST"])
 @login_required
-def summary_form():
-    return render_template("summary_form.html", error=None, cabinets=get_cabinets())
-
-
-@app.route("/upload-summary", methods=["POST"])
-@login_required
-def upload_summary():
+@project_access_required
+def upload_summary(slug):
+    cabinets = get_project_cabinets(g.project["id"])
     cabinet = request.form.get("cabinet", "").strip()
     f = request.files.get("file")
 
     if not cabinet:
         return render_template(
-            "summary_form.html", error="Укажите кабинет", cabinets=get_cabinets(),
+            "upload_form.html", error="Укажите кабинет", cabinets=cabinets, slug=slug,
         ), 400
     if not f or f.filename == "":
         return render_template(
-            "summary_form.html", error="Выберите файл", cabinets=get_cabinets(),
+            "upload_form.html", error="Выберите файл", cabinets=cabinets, slug=slug,
         ), 400
 
     filename = safe_filename(f.filename)
     if not filename.lower().endswith(".xlsx"):
         return render_template(
-            "summary_form.html", error="Файл должен быть .xlsx", cabinets=get_cabinets(),
+            "upload_form.html", error="Файл должен быть .xlsx", cabinets=cabinets, slug=slug,
         ), 400
 
     dest = UPLOAD_DIR / filename
@@ -264,7 +348,7 @@ def upload_summary():
     except Exception as e:
         return render_template(
             "summary_result.html", error=str(e), ingest_rows=0, total=0, failed=0,
-            failures=[], logs=logs,
+            failures=[], logs=logs, slug=slug,
         ), 500
     finally:
         dest.unlink(missing_ok=True)
@@ -285,6 +369,54 @@ def upload_summary():
         failed=len(failures),
         failures=failures,
         logs=logs,
+        slug=slug,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — тесты загрузки (текущее состояние сверки)
+# ---------------------------------------------------------------------------
+
+@app.route("/p/<slug>/tests", methods=["GET"])
+@login_required
+@project_access_required
+def tests_page(slug):
+    cabinets = get_project_cabinets(g.project["id"])
+    if not cabinets:
+        return render_template(
+            "tests.html", error=None, total=0, failed=0, failures=[], has_cabinets=False,
+        )
+
+    FIELDS = [
+        "cabinet", "report_number", "report_type", "period_start", "period_end",
+        "field_name", "expected_value", "actual_value", "diff", "tolerance", "is_ok", "status",
+    ]
+    try:
+        client = get_client()
+        rows = client.query(
+            f"""
+            SELECT {', '.join(FIELDS)}
+            FROM wb_reconciliation_results FINAL
+            WHERE cabinet IN {{cabinets:Array(String)}}
+            ORDER BY cabinet, report_number, field_name
+            """,
+            parameters={"cabinets": cabinets},
+        ).result_rows
+    except Exception as e:
+        return render_template(
+            "tests.html", error=str(e), total=0, failed=0, failures=[], has_cabinets=True,
+        ), 500
+
+    rows_as_dicts = [dict(zip(FIELDS, r)) for r in rows]
+    failures = [r for r in rows_as_dicts if not r["is_ok"]]
+
+    return render_template(
+        "tests.html",
+        error=None,
+        total=len(rows_as_dicts),
+        failed=len(failures),
+        failures=failures,
+        has_cabinets=True,
     )
 
 

@@ -3,8 +3,8 @@
 {% block title %}Дашборд{% endblock %}
 
 {% block content %}
-  <h1 class="text-2xl font-bold font-montserrat">Дашборд</h1>
-  <p class="text-sm text-secondary mt-1">Кабинетов в системе: {{ cabinets|length }}</p>
+  <h1 class="text-2xl font-bold font-montserrat">Дашборд проекта</h1>
+  <p class="text-sm text-secondary mt-1">Кабинетов в проекте: {{ cabinets|length }}</p>
 
   <div class="bg-surface border border-border rounded-2xl mt-6 overflow-hidden max-w-xl">
     <div class="px-6 py-4 border-b border-border">
@@ -22,7 +22,7 @@
           </tr>
           {% else %}
           <tr>
-            <td class="px-4 py-3 text-secondary">Кабинетов пока нет — загрузите первый отчёт.</td>
+            <td class="px-4 py-3 text-secondary">Кабинетов пока нет — добавьте их в project_cabinets.</td>
           </tr>
           {% endfor %}
         </tbody>

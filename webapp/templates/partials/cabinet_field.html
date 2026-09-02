@@ -1,9 +1,10 @@
+{% set field_id = field_id|default("cabinet") %}
 <div>
-  <label for="cabinet" class="text-sm font-semibold">Кабинет</label>
-  <input type="text" id="cabinet" name="cabinet" list="cabinets"
+  <label for="{{ field_id }}" class="text-sm font-semibold">Кабинет</label>
+  <input type="text" id="{{ field_id }}" name="cabinet" list="{{ field_id }}-list"
          placeholder="Например: AcmeShop" autocomplete="off" required
          class="w-full mt-2 bg-page border border-border focus:border-accent focus:outline-none rounded-lg px-3 py-2 text-sm">
-  <datalist id="cabinets">
+  <datalist id="{{ field_id }}-list">
     {% for c in cabinets %}<option value="{{ c }}">{% endfor %}
   </datalist>
   <p class="text-xs text-secondary mt-1">Название кабинета — как в отчётах WB.</p>
