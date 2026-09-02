@@ -150,17 +150,34 @@ def user_has_project_access(user_id: int, project_id: int) -> bool:
     return count > 0
 
 
-def get_project_cabinets(project_id: int) -> list[str]:
+def get_project_cabinets(project_id: int, platform: str | None = None) -> list[str]:
     """Кабинеты, зарегистрированные за проектом. При ошибке — []."""
+    query = "SELECT cabinet FROM project_cabinets FINAL WHERE project_id = {pid:UInt32}"
+    parameters = {"pid": int(project_id)}
+    if platform is not None:
+        query += " AND platform = {platform:String}"
+        parameters["platform"] = platform
+    query += " ORDER BY cabinet"
+    try:
+        client = get_client()
+        rows = client.query(query, parameters=parameters).result_rows
+        return [r[0] for r in rows]
+    except Exception:
+        log.exception("Не удалось получить кабинеты проекта id=%s", project_id)
+        return []
+
+
+def get_project_platforms(project_id: int) -> list[str]:
+    """Площадки, представленные среди кабинетов проекта. При ошибке — []."""
     try:
         client = get_client()
         rows = client.query(
-            "SELECT cabinet FROM project_cabinets FINAL WHERE project_id = {pid:UInt32} ORDER BY cabinet",
+            "SELECT DISTINCT platform FROM project_cabinets FINAL WHERE project_id = {pid:UInt32} ORDER BY platform",
             parameters={"pid": int(project_id)},
         ).result_rows
         return [r[0] for r in rows]
     except Exception:
-        log.exception("Не удалось получить кабинеты проекта id=%s", project_id)
+        log.exception("Не удалось получить площадки проекта id=%s", project_id)
         return []
 
 
@@ -254,30 +271,45 @@ def project_dashboard(slug):
 # Routes — загрузка отчётов
 # ---------------------------------------------------------------------------
 
+# Площадки, для которых уже есть ingest-адаптер и формы загрузки. Остальные
+# площадки, встреченные среди кабинетов проекта (project_cabinets.platform),
+# рендерятся как disabled-заглушка на /p/<slug>/upload.
+SUPPORTED_PLATFORMS = {"wb"}
+
+
+def upload_form_context(project_id: int, slug: str, error: str | None = None) -> dict:
+    platforms = get_project_platforms(project_id)
+    return {
+        "error": error,
+        "slug": slug,
+        "cabinets": get_project_cabinets(project_id, platform="wb"),
+        "has_wb": "wb" in platforms,
+        "other_platforms": [p for p in platforms if p not in SUPPORTED_PLATFORMS],
+    }
+
+
 @app.route("/p/<slug>/upload", methods=["GET"])
 @login_required
 @project_access_required
 def upload_page(slug):
-    return render_template(
-        "upload_form.html", error=None, cabinets=get_project_cabinets(g.project["id"]), slug=slug,
-    )
+    return render_template("upload_form.html", **upload_form_context(g.project["id"], slug))
 
 
 @app.route("/p/<slug>/upload/detail", methods=["POST"])
 @login_required
 @project_access_required
 def upload_detail(slug):
-    cabinets = get_project_cabinets(g.project["id"])
     cabinet = request.form.get("cabinet", "").strip()
     files = request.files.getlist("files")
 
     if not cabinet:
         return render_template(
-            "upload_form.html", error="Укажите кабинет", cabinets=cabinets, slug=slug,
+            "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
         ), 400
     if not files or all(f.filename == "" for f in files):
         return render_template(
-            "upload_form.html", error="Выберите хотя бы один файл", cabinets=cabinets, slug=slug,
+            "upload_form.html",
+            **upload_form_context(g.project["id"], slug, "Выберите хотя бы один файл"),
         ), 400
 
     saved_paths, skipped = [], []
@@ -292,7 +324,8 @@ def upload_detail(slug):
 
     if not saved_paths:
         return render_template(
-            "upload_form.html", error="Ни одного .xlsx файла не найдено", cabinets=cabinets, slug=slug,
+            "upload_form.html",
+            **upload_form_context(g.project["id"], slug, "Ни одного .xlsx файла не найдено"),
         ), 400
 
     logs = []
@@ -318,23 +351,23 @@ def upload_detail(slug):
 @login_required
 @project_access_required
 def upload_summary(slug):
-    cabinets = get_project_cabinets(g.project["id"])
     cabinet = request.form.get("cabinet", "").strip()
     f = request.files.get("file")
 
     if not cabinet:
         return render_template(
-            "upload_form.html", error="Укажите кабинет", cabinets=cabinets, slug=slug,
+            "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
         ), 400
     if not f or f.filename == "":
         return render_template(
-            "upload_form.html", error="Выберите файл", cabinets=cabinets, slug=slug,
+            "upload_form.html", **upload_form_context(g.project["id"], slug, "Выберите файл"),
         ), 400
 
     filename = safe_filename(f.filename)
     if not filename.lower().endswith(".xlsx"):
         return render_template(
-            "upload_form.html", error="Файл должен быть .xlsx", cabinets=cabinets, slug=slug,
+            "upload_form.html",
+            **upload_form_context(g.project["id"], slug, "Файл должен быть .xlsx"),
         ), 400
 
     dest = UPLOAD_DIR / filename

@@ -7,6 +7,7 @@
   {% include "partials/error_banner.html" %}
 
   <div class="grid gap-6 mt-6 lg:grid-cols-2">
+    {% if has_wb %}
     <div class="bg-surface border border-border rounded-2xl p-6">
       <h2 class="text-lg font-bold font-montserrat">Детальный отчёт WB</h2>
       <form action="{{ url_for('upload_detail', slug=slug) }}" method="post" enctype="multipart/form-data" class="mt-4">
@@ -54,5 +55,18 @@
         </button>
       </form>
     </div>
+    {% else %}
+    <div class="bg-surface border border-border rounded-2xl p-6 text-sm text-secondary">
+      У проекта нет кабинетов WB — загрузка недоступна. Добавьте кабинет с
+      <code>platform='wb'</code> в project_cabinets.
+    </div>
+    {% endif %}
+
+    {% for p in other_platforms %}
+    <div class="bg-surface border border-border rounded-2xl p-6 opacity-50">
+      <h2 class="text-lg font-bold font-montserrat">{{ p|upper }}</h2>
+      <p class="text-sm text-secondary mt-1">Площадка пока не поддерживается — адаптер загрузки ещё не реализован.</p>
+    </div>
+    {% endfor %}
   </div>
 {% endblock %}
