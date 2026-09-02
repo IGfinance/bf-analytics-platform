@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Профиль{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-bold font-montserrat">Профиль</h1>
+
+  <div class="bg-surface border border-border rounded-2xl p-6 mt-6 max-w-lg">
+    <p class="text-xs text-secondary uppercase">Email</p>
+    <p class="text-sm font-medium mt-1">{{ current_user.email }}</p>
+  </div>
+
+  <div class="bg-surface border border-border rounded-2xl mt-6 max-w-lg overflow-hidden">
+    <div class="px-6 py-4 border-b border-border">
+      <h2 class="text-lg font-bold font-montserrat">Доступные проекты</h2>
+    </div>
+    {% for p in projects %}
+      <a href="{{ url_for('project_dashboard', slug=p.slug) }}"
+         class="block px-6 py-3 text-sm border-b border-border last:border-0 hover:bg-surface-hover transition-colors duration-150">
+        {{ p.name }}
+      </a>
+    {% else %}
+      <p class="px-6 py-3 text-sm text-secondary">Нет доступных проектов.</p>
+    {% endfor %}
+  </div>
+{% endblock %}

@@ -1,41 +1,102 @@
-<header class="h-16 bg-surface border-b border-border flex items-center justify-between px-4 lg:px-6 sticky top-0 z-30">
-  <div class="flex items-center gap-3">
-    <button type="button"
-            class="lg:hidden p-2 -ml-2 rounded-lg text-secondary hover:bg-surface-hover hover:text-primary transition-colors duration-150"
-            aria-label="Открыть меню" data-sidebar-toggle>
-      {% include "icons/menu.svg" %}
-    </button>
-    <span class="text-lg font-bold font-montserrat tracking-tight">bf-analytics</span>
-  </div>
+<header class="bg-surface border-b border-border sticky top-0 z-30">
+  <div class="h-16 flex items-center justify-between px-4 lg:px-6">
+    <div class="flex items-center gap-6 min-w-0">
+      <span class="text-lg font-bold font-montserrat tracking-tight shrink-0">bf-analytics</span>
 
-  <div class="flex items-center gap-2 lg:gap-4">
-    {# Переключатель проекта — данные появятся после миграции projects/project_cabinets #}
-    <button type="button"
-            class="flex items-center gap-2 px-3 py-2 rounded-lg border border-border hover:border-border-hover transition-colors duration-150 text-sm font-medium">
-      <span>{{ current_project or "Проект не выбран" }}</span>
-      {% include "icons/chevron-down.svg" %}
-    </button>
+      <nav class="hidden lg:flex items-center gap-1">
+        {% for item in top_nav_items %}
+          {% if item.href %}
+            <a href="{{ item.href }}"
+               class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
+                      {% if item.active %}bg-accent/15 text-accent{% else %}text-secondary hover:bg-surface-hover hover:text-primary{% endif %}">
+              {% include "icons/" + item.icon + ".svg" %}
+              <span>{{ item.label }}</span>
+            </a>
+          {% else %}
+            <span class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-muted cursor-not-allowed"
+                  title="Сначала выберите проект">
+              {% include "icons/" + item.icon + ".svg" %}
+              <span>{{ item.label }}</span>
+            </span>
+          {% endif %}
+        {% endfor %}
+      </nav>
+    </div>
 
-    {# Алерты — счётчик непрочитанных из таблицы alerts (появится с миграцией) #}
-    <button type="button"
-            class="relative p-2 rounded-lg text-secondary hover:bg-surface-hover hover:text-primary transition-colors duration-150"
-            aria-label="Алерты">
-      {% include "icons/bell.svg" %}
-      {% if unread_alerts %}
-        <span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-danger animate-pulse"></span>
-      {% endif %}
-    </button>
-
-    {% if current_user.is_authenticated %}
-      <div class="flex items-center gap-2">
-        <span class="hidden sm:inline text-sm text-secondary">{{ current_user.email }}</span>
-        <form action="{{ url_for('logout') }}" method="post">
-          <button type="submit"
-                  class="text-sm font-medium text-secondary hover:text-primary transition-colors duration-150">
-            Выйти
+    <div class="flex items-center gap-2 lg:gap-4">
+      {% if user_projects %}
+        <div class="relative" data-project-switcher>
+          <button type="button" data-project-switcher-toggle
+                  class="flex items-center gap-2 px-3 py-2 rounded-lg border border-border hover:border-border-hover transition-colors duration-150 text-sm font-medium">
+            <span>{{ current_project.name if current_project else "Выбрать проект" }}</span>
+            {% include "icons/chevron-down.svg" %}
           </button>
-        </form>
-      </div>
-    {% endif %}
+          <div class="hidden absolute right-0 mt-2 w-56 bg-surface border border-border rounded-lg shadow-lg py-1 z-40"
+               data-project-switcher-menu>
+            {% for p in user_projects %}
+              <a href="{{ url_for('project_dashboard', slug=p.slug) }}"
+                 class="block px-3 py-2 text-sm hover:bg-surface-hover transition-colors duration-150
+                        {% if current_project and current_project.slug == p.slug %}text-accent{% else %}text-primary{% endif %}">
+                {{ p.name }}
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+
+      {# Алерты — счётчик непрочитанных из таблицы alerts (появится с миграцией) #}
+      <button type="button"
+              class="relative p-2 rounded-lg text-secondary hover:bg-surface-hover hover:text-primary transition-colors duration-150"
+              aria-label="Алерты">
+        {% include "icons/bell.svg" %}
+        {% if unread_alerts %}
+          <span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-danger animate-pulse"></span>
+        {% endif %}
+      </button>
+
+      {% if current_user.is_authenticated %}
+        <div class="hidden sm:flex items-center gap-2">
+          <span class="text-sm text-secondary">{{ current_user.email }}</span>
+          <form action="{{ url_for('logout') }}" method="post">
+            <button type="submit"
+                    class="text-sm font-medium text-secondary hover:text-primary transition-colors duration-150">
+              Выйти
+            </button>
+          </form>
+        </div>
+      {% endif %}
+
+      <button type="button"
+              class="lg:hidden p-2 rounded-lg text-secondary hover:bg-surface-hover hover:text-primary transition-colors duration-150"
+              aria-label="Открыть меню" data-mobile-nav-toggle>
+        {% include "icons/menu.svg" %}
+      </button>
+    </div>
   </div>
+
+  <nav class="hidden lg:hidden border-t border-border px-4 py-2 space-y-1" data-mobile-nav>
+    {% for item in top_nav_items %}
+      {% if item.href %}
+        <a href="{{ item.href }}"
+           class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
+                  {% if item.active %}bg-accent/15 text-accent{% else %}text-secondary hover:bg-surface-hover hover:text-primary{% endif %}">
+          {% include "icons/" + item.icon + ".svg" %}
+          <span>{{ item.label }}</span>
+        </a>
+      {% else %}
+        <span class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-muted cursor-not-allowed"
+              title="Сначала выберите проект">
+          {% include "icons/" + item.icon + ".svg" %}
+          <span>{{ item.label }}</span>
+        </span>
+      {% endif %}
+    {% endfor %}
+    {% if current_user.is_authenticated %}
+      <form action="{{ url_for('logout') }}" method="post" class="px-3 pt-2 sm:hidden">
+        <button type="submit" class="text-sm font-medium text-secondary hover:text-primary transition-colors duration-150">
+          Выйти ({{ current_user.email }})
+        </button>
+      </form>
+    {% endif %}
+  </nav>
 </header>

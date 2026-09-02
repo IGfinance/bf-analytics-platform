@@ -3,14 +3,18 @@
 Веб-форма для ручной загрузки отчётов WB в ClickHouse.
 
 Маршруты:
-  GET  /                    — кабинет пользователя: список доступных проектов
-  GET  /p/<slug>/           — дашборд проекта (кабинеты)
+  GET  /                    — список доступных проектов
+  GET  /p/<slug>/           — дашборд проекта (кабинеты + текущее состояние сверки)
   GET  /p/<slug>/upload     — форма загрузки отчётов
   POST /p/<slug>/upload/detail  — обработка детального отчёта
   POST /p/<slug>/upload/summary — обработка сводного отчёта + сверка
-  GET  /p/<slug>/tests      — текущее состояние сверки по кабинетам проекта
+  GET  /profile             — профиль пользователя
   GET/POST /login — вход
   POST /logout    — выход
+
+Навигация — в шапке (Проекты / Дашборд / Загрузка / Профиль), не в
+sidebar. Дашборд/Загрузка ведут на последний посещённый проект
+(session["current_project_slug"], см. project_access_required).
 
 Вход — по email/паролю сотрудника (таблица users), через Flask-Login.
 Первого пользователя заводит scripts/create_user.py. Доступ к проекту —
@@ -26,7 +30,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, abort, g, redirect, render_template, request, url_for
+from flask import Flask, abort, g, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
 WEBAPP_DIR = Path(__file__).parent
@@ -78,14 +82,6 @@ if URL_PREFIX:
 UPLOAD_DIR = WEBAPP_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Навигация внутри проекта — endpoint=None рендерится как отключённый пункт
-# (фича ещё не реализована), а не мёртвая ссылка. Требует g.project (slug).
-PROJECT_NAV_ITEMS = [
-    {"label": "Дашборд", "endpoint": "project_dashboard", "icon": "layout-dashboard"},
-    {"label": "Загрузка отчётов", "endpoint": "upload_page", "icon": "upload"},
-    {"label": "Тесты загрузки", "endpoint": "tests_page", "icon": "git-compare"},
-    {"label": "Алерты", "endpoint": None, "icon": "bell"},
-]
 
 
 # ---------------------------------------------------------------------------
@@ -195,21 +191,61 @@ def project_access_required(view):
         if not user_has_project_access(int(current_user.id), project["id"]):
             abort(403)
         g.project = project
+        session["current_project_slug"] = slug
         return view(*args, slug=slug, **kwargs)
     return wrapped
 
 
-@app.context_processor
-def inject_shell_context():
-    """Общие данные оболочки (header + sidebar) для всех шаблонов.
+def build_top_nav() -> list[dict]:
+    """Пункты навигации в шапке.
 
-    nav_items/current_project пусты вне проекта (например, на кабинете
-    пользователя). unread_alerts — заглушка до миграции alerts.
+    Дашборд/Загрузка ведут на текущий проект — g.project, если запрос уже
+    внутри проекта, иначе последний посещённый (session), иначе недоступны
+    (href=None рендерится как disabled — сначала нужно выбрать проект через
+    переключатель или страницу «Проекты»).
     """
     project = g.get("project")
+    slug = project["slug"] if project else session.get("current_project_slug")
+    endpoint = request.endpoint
+
+    items = [
+        {"label": "Проекты", "icon": "folder", "href": url_for("home"), "active": endpoint == "home"},
+    ]
+    if slug:
+        items.append({
+            "label": "Дашборд", "icon": "layout-dashboard",
+            "href": url_for("project_dashboard", slug=slug),
+            "active": endpoint == "project_dashboard",
+        })
+        items.append({
+            "label": "Загрузка", "icon": "upload",
+            "href": url_for("upload_page", slug=slug),
+            "active": endpoint in ("upload_page", "upload_detail", "upload_summary"),
+        })
+    else:
+        items.append({"label": "Дашборд", "icon": "layout-dashboard", "href": None, "active": False})
+        items.append({"label": "Загрузка", "icon": "upload", "href": None, "active": False})
+    items.append({
+        "label": "Профиль", "icon": "user",
+        "href": url_for("profile"),
+        "active": endpoint == "profile",
+    })
+    return items
+
+
+@app.context_processor
+def inject_shell_context():
+    """Общие данные шапки для всех шаблонов после логина.
+
+    unread_alerts — заглушка до миграции alerts.
+    """
+    if not current_user.is_authenticated:
+        return {}
+    project = g.get("project")
     return {
-        "nav_items": PROJECT_NAV_ITEMS if project else [],
-        "current_project": project["name"] if project else None,
+        "top_nav_items": build_top_nav(),
+        "user_projects": get_user_projects(int(current_user.id)),
+        "current_project": project,
         "unread_alerts": 0,
     }
 
@@ -260,11 +296,46 @@ def home():
 # Routes — дашборд проекта
 # ---------------------------------------------------------------------------
 
+RECONCILIATION_FIELDS = [
+    "cabinet", "report_number", "report_type", "period_start", "period_end",
+    "field_name", "expected_value", "actual_value", "diff", "tolerance", "is_ok", "status",
+]
+
+
+def get_reconciliation_state(cabinets: list[str]) -> dict:
+    """Текущее состояние последней сверки (wb_reconciliation_results) по кабинетам.
+
+    При ошибке ClickHouse — total/failed=0, error заполнен для показа в шаблоне.
+    """
+    if not cabinets:
+        return {"error": None, "total": 0, "failed": 0, "failures": []}
+    try:
+        client = get_client()
+        rows = client.query(
+            f"""
+            SELECT {', '.join(RECONCILIATION_FIELDS)}
+            FROM wb_reconciliation_results FINAL
+            WHERE cabinet IN {{cabinets:Array(String)}}
+            ORDER BY cabinet, report_number, field_name
+            """,
+            parameters={"cabinets": cabinets},
+        ).result_rows
+    except Exception as e:
+        return {"error": str(e), "total": 0, "failed": 0, "failures": []}
+
+    rows_as_dicts = [dict(zip(RECONCILIATION_FIELDS, r)) for r in rows]
+    failures = [r for r in rows_as_dicts if not r["is_ok"]]
+    return {"error": None, "total": len(rows_as_dicts), "failed": len(failures), "failures": failures}
+
+
 @app.route("/p/<slug>/", methods=["GET"])
 @login_required
 @project_access_required
 def project_dashboard(slug):
-    return render_template("dashboard.html", cabinets=get_project_cabinets(g.project["id"]))
+    cabinets = get_project_cabinets(g.project["id"])
+    return render_template(
+        "dashboard.html", cabinets=cabinets, reconciliation=get_reconciliation_state(cabinets),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -407,50 +478,13 @@ def upload_summary(slug):
 
 
 # ---------------------------------------------------------------------------
-# Routes — тесты загрузки (текущее состояние сверки)
+# Routes — профиль пользователя
 # ---------------------------------------------------------------------------
 
-@app.route("/p/<slug>/tests", methods=["GET"])
+@app.route("/profile", methods=["GET"])
 @login_required
-@project_access_required
-def tests_page(slug):
-    cabinets = get_project_cabinets(g.project["id"])
-    if not cabinets:
-        return render_template(
-            "tests.html", error=None, total=0, failed=0, failures=[], has_cabinets=False,
-        )
-
-    FIELDS = [
-        "cabinet", "report_number", "report_type", "period_start", "period_end",
-        "field_name", "expected_value", "actual_value", "diff", "tolerance", "is_ok", "status",
-    ]
-    try:
-        client = get_client()
-        rows = client.query(
-            f"""
-            SELECT {', '.join(FIELDS)}
-            FROM wb_reconciliation_results FINAL
-            WHERE cabinet IN {{cabinets:Array(String)}}
-            ORDER BY cabinet, report_number, field_name
-            """,
-            parameters={"cabinets": cabinets},
-        ).result_rows
-    except Exception as e:
-        return render_template(
-            "tests.html", error=str(e), total=0, failed=0, failures=[], has_cabinets=True,
-        ), 500
-
-    rows_as_dicts = [dict(zip(FIELDS, r)) for r in rows]
-    failures = [r for r in rows_as_dicts if not r["is_ok"]]
-
-    return render_template(
-        "tests.html",
-        error=None,
-        total=len(rows_as_dicts),
-        failed=len(failures),
-        failures=failures,
-        has_cabinets=True,
-    )
+def profile():
+    return render_template("profile.html", projects=get_user_projects(int(current_user.id)))
 
 
 if __name__ == "__main__":

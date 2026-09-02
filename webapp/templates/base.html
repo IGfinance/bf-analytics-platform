@@ -12,13 +12,9 @@
 
   {% include "partials/header.html" %}
 
-  <div class="flex">
-    {% include "partials/sidebar.html" %}
-
-    <main class="flex-1 min-w-0 p-4 lg:p-6">
-      {% block content %}{% endblock %}
-    </main>
-  </div>
+  <main class="p-4 lg:p-6">
+    {% block content %}{% endblock %}
+  </main>
 
   <script src="{{ url_for('static', filename='shell.js') }}"></script>
 </body>
