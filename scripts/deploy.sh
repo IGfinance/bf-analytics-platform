@@ -21,7 +21,7 @@ echo "→ Сборка style.css"
 npm run build:css
 
 echo "→ rsync на $DEPLOY_SSH_HOST:$REMOTE_PATH"
-sshpass -p "$DEPLOY_SSH_PASSWORD" rsync -av -e "ssh -o StrictHostKeyChecking=no" \
+sshpass -p "$DEPLOY_SSH_PASSWORD" rsync -av --delete -e "ssh -o StrictHostKeyChecking=no" \
   --exclude 'webapp/uploads/' \
   --exclude '__pycache__/' \
   --exclude '*.pyc' \
