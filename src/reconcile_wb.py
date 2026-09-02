@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 
 from wb_core import get_client, SCRIPT_DIR
 
-load_dotenv(SCRIPT_DIR / ".env")
+load_dotenv(SCRIPT_DIR.parent / ".env")  # .env лежит в корне репозитория, на уровень выше src/
 
 RULES_PATH = SCRIPT_DIR / "reconciliation_rules_wb.yaml"
 

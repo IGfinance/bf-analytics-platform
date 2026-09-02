@@ -23,7 +23,7 @@ from werkzeug.security import generate_password_hash
 
 SCRIPT_DIR = Path(__file__).parent
 ROOT_DIR = SCRIPT_DIR.parent
-sys.path.insert(0, str(ROOT_DIR))
+sys.path.insert(0, str(ROOT_DIR / "src"))
 
 from wb_core import get_client  # noqa: E402
 

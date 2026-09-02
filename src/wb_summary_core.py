@@ -16,7 +16,7 @@ import clickhouse_connect
 from dotenv import load_dotenv
 
 SCRIPT_DIR = Path(__file__).parent
-load_dotenv(SCRIPT_DIR / ".env")
+load_dotenv(SCRIPT_DIR.parent / ".env")  # .env лежит в корне репозитория, на уровень выше src/
 
 # Маппинг: заголовок в xlsx -> (canonical_field, ch_type)
 # Порядок определяет порядок вставки — совпадает с DDL schema_wb_summary.sql

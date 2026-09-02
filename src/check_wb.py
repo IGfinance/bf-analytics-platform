@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from wb_core import get_client, SCRIPT_DIR
 
-load_dotenv(SCRIPT_DIR / ".env")
+load_dotenv(SCRIPT_DIR.parent / ".env")  # .env лежит в корне репозитория, на уровень выше src/
 
 CHECK_RESULTS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS wb_check_results

@@ -34,10 +34,11 @@ from flask import Flask, abort, g, redirect, render_template, request, session, 
 from flask_login import current_user, login_required, login_user, logout_user
 
 WEBAPP_DIR = Path(__file__).parent
-CLICKHOUSE_DIR = WEBAPP_DIR.parent
-sys.path.insert(0, str(CLICKHOUSE_DIR))
+ROOT_DIR = WEBAPP_DIR.parent
+SRC_DIR = ROOT_DIR / "src"
+sys.path.insert(0, str(SRC_DIR))
 
-load_dotenv(CLICKHOUSE_DIR / ".env")   # реквизиты ClickHouse
+load_dotenv(ROOT_DIR / ".env")   # реквизиты ClickHouse
 load_dotenv(WEBAPP_DIR / ".env")       # секреты веб-формы (может переопределить)
 
 from wb_core import ingest_files, get_client          # noqa: E402
