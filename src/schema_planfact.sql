@@ -66,6 +66,45 @@ CREATE TABLE IF NOT EXISTS planfact_brand_map
 ENGINE = ReplacingMergeTree(loaded_at)
 ORDER BY (project_id, pf_project);
 
+-- Лог значений "Проекты" без пары в planfact_brand_map — аналог
+-- planfact_unmapped_statya_log ниже. Вкладка "Бренды" ведётся Ильясом
+-- вручную и неполна по построению (заметка 2026-09-04: HomeMaster сперва
+-- был без юрлица, "MY" вообще не заведён) — лог даёт видимость пробела
+-- при каждой перезаливке транзакций, а не разовую находку в чате.
+CREATE TABLE IF NOT EXISTS planfact_unmapped_project_log
+(
+    seen_at      DateTime DEFAULT now(),
+    project_id   UInt32,
+    pf_project   String,
+    rows_count   UInt32,
+    source_file  String
+)
+ENGINE = MergeTree
+ORDER BY (seen_at);
+
+-- Справочник счетов ПланФакта — вкладка "Счета" той же гугл-таблицы.
+-- Отдельно от bank_statements/card_statements: это каталог ВСЕХ счетов,
+-- которые Ильяс завёл в ПланФакте (67 строк на 2026-09-04), а не факт
+-- операций по ним. account_number сопоставим с
+-- bank_statements.account_number по значению, когда оно заполнено —
+-- но перекрытие неполное в обе стороны: часть счетов ПланФакта без
+-- номера/названия (только "Счёт в ПланФакте"), часть карт из
+-- card_statements не заведена в ПланФакте вовсе (по картам физлиц
+-- проходит лишь часть бизнес-трат вперемешку с личными — Ильяс,
+-- 2026-09-04). Автоматический мэтчинг не делаем, справочник только
+-- для ручной сверки на этом этапе.
+CREATE TABLE IF NOT EXISTS planfact_accounts
+(
+    project_id      UInt32,
+    pf_account_name String,             -- "Счет в ПланФакте" — как в planfact_transactions.account_name
+    account_number  Nullable(String),   -- "Расчетный счет"
+    account_label   Nullable(String),   -- "Название счета" (нормализованное Ильясом имя)
+    account_type    Nullable(String),   -- "Тип": Реальный/Технический
+    loaded_at       DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(loaded_at)
+ORDER BY (project_id, pf_account_name);
+
 -- Справочник сопоставления "Статья" (ПланФакт) → статья финучёта Ильяса.
 -- Два независимых дерева с одним и тем же ключом сопоставления (kind
 -- различает, к какому именно отчёту относится результат) — на 2026-09-03

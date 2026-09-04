@@ -73,6 +73,33 @@ def main():
     client.insert("planfact_transactions", data, column_names=COLUMNS)
     print(f"Загружено {len(data)} строк в planfact_transactions.")
 
+    log_unmapped_projects(client, args.project_id, rows, input_file.name)
+
+
+def log_unmapped_projects(client, project_id: int, rows: list[dict], source_file: str) -> None:
+    """Пишет в planfact_unmapped_project_log значения pf_project, для которых
+    нет пары в planfact_brand_map — видимость пробела в справочнике "Бренды"
+    при каждой перезаливке, а не разовая находка вручную (см. историю с
+    "MY"/HomeMaster, 2026-09-04)."""
+    known = {r[0] for r in client.query(
+        "SELECT pf_project FROM planfact_brand_map WHERE project_id = {pid:UInt32}",
+        parameters={"pid": project_id},
+    ).result_rows}
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        pf_project = row.get("pf_project")
+        if pf_project and pf_project not in known:
+            counts[pf_project] = counts.get(pf_project, 0) + 1
+
+    if not counts:
+        return
+
+    log_columns = ["project_id", "pf_project", "rows_count", "source_file"]
+    log_data = [[project_id, pf_project, count, source_file] for pf_project, count in counts.items()]
+    client.insert("planfact_unmapped_project_log", log_data, column_names=log_columns)
+    print(f"Не смэплено на planfact_brand_map: {counts} — записано в planfact_unmapped_project_log.")
+
 
 if __name__ == "__main__":
     main()
