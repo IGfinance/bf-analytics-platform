@@ -11,10 +11,12 @@
 -- "Политика" таблицы Cloudsix, пока в процессе разметки — сопоставлены не
 -- все статьи, см. planfact_unmapped_statya_log).
 
--- Сырые транзакции — колонки A-T экспорта ПланФакта как есть, плюс
--- Бренд/Площадка/Месяц начисления/Сумма в руб — уже вычислены в самой
--- таблице Cloudsix (по Юрлицу/Счёту), доверяем этому расчёту, не
--- пересчитываем заново.
+-- Сырые транзакции — 20 колонок (A-T) реального xlsx-экспорта ПланФакта
+-- как есть, без пересчёта. Бренд/Площадка НЕ приходят готовыми в этом
+-- экспорте (в отличие от предположения при проектировании таблицы,
+-- 2026-09-04) — вычисляются JOIN'ом pf_project → planfact_brand_map при
+-- чтении (Metabase Model), не на этапе загрузки, чтобы правки маппинга в
+-- гугл-таблице не требовали перезаливки транзакций.
 CREATE TABLE IF NOT EXISTS planfact_transactions
 (
     project_id              UInt32,
@@ -23,11 +25,11 @@ CREATE TABLE IF NOT EXISTS planfact_transactions
     payment_status          Nullable(String),
     accrual_date            Nullable(Date),
     accrual_status          Nullable(String),
-    counterparty            Nullable(String),
+    counterparty             Nullable(String),
     counterparty_inn        Nullable(String),
     operation_type          Nullable(String),   -- "Тип": Выплата/Поступление/Перемещение...
-    account_name            Nullable(String),   -- "Счет" (название в ПланФакте, см. planfact_accounts)
-    account_number          Nullable(String),
+    account_name            Nullable(String),   -- "Счет" (название в ПланФакте, см. planfact_brand_map/"Счета")
+    account_number          Nullable(String),   -- "№ Счета"
     bank_name               Nullable(String),
     bik                     Nullable(String),
     legal_entity            Nullable(String),   -- "Юрлицо"
@@ -36,23 +38,33 @@ CREATE TABLE IF NOT EXISTS planfact_transactions
     parent_statya           Nullable(String),
     activity_type           Nullable(String),   -- "Вид деятельности"
     payment_purpose         Nullable(String),
-    pf_project              Nullable(String),   -- "Проекты" (поле в самом ПланФакте, не наш project_id)
+    pf_project               Nullable(String),   -- "Проекты" (поле в самом ПланФакте) — ключ для planfact_brand_map, пусто у нераспределённых/общих операций (70% строк на 2026-09-04)
     amount                  Nullable(Float64),
     currency                Nullable(String),
-    is_overdraft            Nullable(String),
-    confirmation_status     Nullable(String),   -- "Подтверждение"
-    operation_kind          Nullable(String),   -- "Операция": Реальный/Технический
-    fx_rate                 Nullable(Float64),
-    amount_rub              Nullable(Float64),
-    brand                   Nullable(String),   -- уже вычислено в источнике, ссылается на brands.name
-    platform                Nullable(String),   -- уже вычислено в источнике: Wb/Ozon/...
-    accrual_month           Nullable(Date),
     source_file             String,
     loaded_at               DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(loaded_at)
 PARTITION BY toYYYYMM(coalesce(accrual_date, payment_date, toDate('1970-01-01')))
 ORDER BY (project_id, source_file, row_num);
+
+-- Мэппинг "Проекты" ПланФакта (свободный текст) → Бренд/Площадка/Юрлицо.
+-- Источник — вкладка "Бренды" гугл-таблицы Ильяса (публична по ссылке,
+-- см. knowledge/business/2026-09-03 архитектура финансов Cloudsix в вики).
+-- brand ссылается на brands.name (schema_projects.sql). Строки с пустым
+-- pf_project (бренды без привязанного юрлица на 2026-09-04: MaxJansen,
+-- HomeMaster, Dorri) не грузятся — нет ключа для джойна.
+CREATE TABLE IF NOT EXISTS planfact_brand_map
+(
+    project_id    UInt32,
+    pf_project    String,             -- как есть в planfact_transactions.pf_project
+    brand         String,
+    platform      String,             -- "Wb" / "Ozon" как в исходной таблице
+    legal_entity  Nullable(String),
+    loaded_at     DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(loaded_at)
+ORDER BY (project_id, pf_project);
 
 -- Справочник сопоставления "Статья" (ПланФакт) → статья финучёта Ильяса.
 -- Два независимых дерева с одним и тем же ключом сопоставления (kind
