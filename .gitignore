@@ -12,6 +12,9 @@ venv/
 # Uploads
 webapp/uploads/
 
+# Сырые исходники клиентов (банковские выписки, ПДн, реквизиты) — не в git
+data-files/
+
 # Node / Tailwind CLI (собранный style.css — шаг деплоя, см. DESIGN.md)
 node_modules/
 webapp/static/style.css
