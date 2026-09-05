@@ -1,0 +1,28 @@
+# Соответствие колонок отчёта Ozon "Начисления" каноническим полям в ClickHouse.
+#
+# Формат: canonical_name -> {type, aliases: [все встречавшиеся варианты написания]}
+#
+# Как добавлять новую колонку, которую Ozon ввёл впервые:
+#   1. Скрипт ingest_ozon.py при загрузке напишет в консоль и в таблицу
+#      ozon_unmapped_columns_log, что встретил неизвестный заголовок.
+#   2. Откройте этот файл, решите: это опечатка/пробел в старом названии
+#      (добавьте в aliases к существующему полю) или правда новое поле
+#      (добавьте новую запись ниже + ALTER TABLE ADD COLUMN в ClickHouse).
+
+columns:
+  accrual_id:              { type: String,   aliases: ["ID начисления"] }
+  accrual_date:            { type: Date,     aliases: ["Дата начисления"] }
+  service_group:           { type: String,   aliases: ["Группа услуг"] }
+  accrual_type:            { type: String,   aliases: ["Тип начисления"] }
+  article:                 { type: String,   aliases: ["Артикул"] }
+  sku:                     { type: IntString, aliases: ["SKU"] }
+  product_name:            { type: String,   aliases: ["Название товара"] }
+  qty:                     { type: Int32,    aliases: ["Количество"] }
+  seller_price:            { type: Float64,  aliases: ["Цена продавца"] }
+  order_accepted_date:     { type: Date,     aliases: ["Дата принятия заказа в обработку или оказания услуги"] }
+  sales_platform:          { type: String,   aliases: ["Платформа продажи"] }
+  fulfillment_scheme:      { type: String,   aliases: ["Схема работы"] }
+  ozon_commission_pct:     { type: Float64,  aliases: ["Вознаграждение Ozon, %"] }
+  localization_index_pct:  { type: Float64,  aliases: ["Индекс локализации, %"] }
+  avg_delivery_hours:      { type: Float64,  aliases: ["Среднее время доставки, часы"] }
+  total_amount:            { type: Float64,  aliases: ["Сумма итого, руб."] }
