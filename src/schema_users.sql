@@ -32,6 +32,19 @@ ORDER BY (user_id, project_id);
 -- project_cabinets есть только кабинеты WB.
 ALTER TABLE project_cabinets ADD COLUMN IF NOT EXISTS platform String DEFAULT 'wb';
 
+-- 2026-09-05: platform добавлена в ключ дедупликации project_cabinets и
+-- brand_cabinets — иначе одинаковый идентификатор кабинета на разных
+-- площадках (WB/Ozon) схлопывался бы в одну строку. ClickHouse не позволяет
+-- добавить уже заполненную колонку в ORDER BY через MODIFY (BAD_ARGUMENTS,
+-- код 36) — обе таблицы пересозданы вручную на проде
+-- (CREATE ..._new -> INSERT SELECT -> RENAME -> DROP), с сохранением данных.
+-- Итоговое состояние (см. system.tables на проде — источник истины):
+--   project_cabinets: колонки без изменений, ORDER BY (cabinet, platform)
+--   brand_cabinets:   + колонка platform String DEFAULT 'wb',
+--                     ORDER BY (brand_id, cabinet, platform)
+-- Для новой БД эти CREATE TABLE в schema_projects.sql нужно поправить так же
+-- (там сейчас ещё старые ключи/колонки — правь синхронно, если меняешь схему).
+
 -- Имя/фамилия — показываются в шапке и профиле вместо email. Существующие
 -- пользователи получают пустую строку, дозаполняется вручную/через
 -- create_user.py --update.
