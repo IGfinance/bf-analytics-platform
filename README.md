@@ -33,6 +33,7 @@
 │   ├── schema_wb_summary.sql    # схема для сводных отчётов и результатов сверки
 │   ├── schema_projects.sql      # проекты, кабинеты, бренды
 │   ├── schema_users.sql         # пользователи, доступ к проектам
+│   ├── schema_wb_metrics_views.sql  # VIEW с формулами метрик WB — источник истины для Metabase и AI-бота
 │   └── metabase_queries/        # SQL-запросы для дашбордов
 ├── webapp/                      # Flask-приложение (веб-форма, Flask-Login)
 │   ├── app.py                   # роуты
