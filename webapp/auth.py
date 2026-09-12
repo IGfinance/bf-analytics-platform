@@ -9,7 +9,7 @@ import logging
 from flask_login import LoginManager, UserMixin
 from werkzeug.security import check_password_hash
 
-from wb_core import get_client
+from ch_control import get_control_client
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class User(UserMixin):
 
 def find_user_by_id(user_id: str) -> User | None:
     try:
-        client = get_client()
+        client = get_control_client()
         rows = client.query(
             "SELECT id, email, first_name, last_name FROM users FINAL WHERE id = {id:UInt32}",
             parameters={"id": int(user_id)},
@@ -50,7 +50,7 @@ def authenticate(email: str, password: str) -> User | None:
     """Возвращает User при верных email/пароле, иначе None (не бросает
     исключение при неверном пароле — только при сбое похода в БД)."""
     try:
-        client = get_client()
+        client = get_control_client()
         rows = client.query(
             "SELECT id, email, password_hash, first_name, last_name FROM users FINAL WHERE email = {email:String}",
             parameters={"email": email},

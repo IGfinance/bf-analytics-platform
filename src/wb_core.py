@@ -101,12 +101,13 @@ def process_file(path: Path, cabinet: str, alias_to_canonical: dict, canonical_t
     return rows, unmapped_raw
 
 
-def get_client():
+def get_client(database: str | None = None):
     host = os.environ["CLICKHOUSE_HOST"]
     port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
     user = os.environ.get("CLICKHOUSE_USER", "default")
     password = os.environ["CLICKHOUSE_PASSWORD"]
-    database = os.environ.get("CLICKHOUSE_DATABASE", "default")
+    if database is None:
+        database = os.environ.get("CLICKHOUSE_DATABASE", "default")
     secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
     return clickhouse_connect.get_client(
         host=host, port=port, username=user, password=password,
@@ -114,8 +115,13 @@ def get_client():
     )
 
 
-def ingest_files(files: list[Path], cabinet: str, log=print) -> dict:
-    """Загружает список xlsx-файлов в ClickHouse. Возвращает сводку по результату."""
+def ingest_files(files: list[Path], cabinet: str, log=print, database: str | None = None) -> dict:
+    """Загружает список xlsx-файлов в ClickHouse. Возвращает сводку по результату.
+
+    database — БД проекта, которому принадлежит cabinet (см. g.project["slug"]
+    в webapp); None — читать CLICKHOUSE_DATABASE из окружения, как раньше
+    (используется CLI-скриптом ingest_wb.py).
+    """
     alias_to_canonical, canonical_type = load_mapping()
     columns = ["cabinet", "report_number"] + list(canonical_type.keys()) + ["extra_columns", "source_file"]
 
@@ -129,7 +135,7 @@ def ingest_files(files: list[Path], cabinet: str, log=print) -> dict:
         for raw_col in unmapped_raw:
             unmapped_log_entries.append((path.name, raw_col))
 
-    client = get_client()
+    client = get_client(database=database)
 
     data = [[row.get(col) for col in columns] for row in all_rows]
     client.insert("wb_reports", data, column_names=columns)

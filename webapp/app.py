@@ -45,6 +45,7 @@ from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
 from reconcile_wb import run_reconciliation            # noqa: E402
 from auth import authenticate, login_manager            # noqa: E402
+from ch_control import get_control_client              # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("webapp")
@@ -100,7 +101,7 @@ def safe_filename(filename: str) -> str:
 def get_user_projects(user_id: int) -> list[dict]:
     """Проекты, доступные пользователю (через user_projects). При ошибке — []."""
     try:
-        client = get_client()
+        client = get_control_client()
         rows = client.query(
             """
             SELECT p.id, p.slug, p.name
@@ -119,7 +120,7 @@ def get_user_projects(user_id: int) -> list[dict]:
 
 def get_project_by_slug(slug: str) -> dict | None:
     try:
-        client = get_client()
+        client = get_control_client()
         rows = client.query(
             "SELECT id, slug, name FROM projects FINAL WHERE slug = {slug:String}",
             parameters={"slug": slug},
@@ -134,7 +135,7 @@ def get_project_by_slug(slug: str) -> dict | None:
 
 def user_has_project_access(user_id: int, project_id: int) -> bool:
     try:
-        client = get_client()
+        client = get_control_client()
         count = client.query(
             "SELECT count() FROM user_projects WHERE user_id = {uid:UInt32} AND project_id = {pid:UInt32}",
             parameters={"uid": int(user_id), "pid": int(project_id)},
@@ -147,8 +148,12 @@ def user_has_project_access(user_id: int, project_id: int) -> bool:
     return count > 0
 
 
-def get_project_cabinets(project_id: int, platform: str | None = None) -> list[str]:
-    """Кабинеты, зарегистрированные за проектом. При ошибке — []."""
+def get_project_cabinets(project_id: int, database: str, platform: str | None = None) -> list[str]:
+    """Кабинеты, зарегистрированные за проектом. При ошибке — [].
+
+    database — БД проекта (g.project["slug"]): project_cabinets живёт
+    внутри БД проекта, не в control.
+    """
     query = "SELECT cabinet FROM project_cabinets FINAL WHERE project_id = {pid:UInt32}"
     parameters = {"pid": int(project_id)}
     if platform is not None:
@@ -156,7 +161,7 @@ def get_project_cabinets(project_id: int, platform: str | None = None) -> list[s
         parameters["platform"] = platform
     query += " ORDER BY cabinet"
     try:
-        client = get_client()
+        client = get_client(database=database)
         rows = client.query(query, parameters=parameters).result_rows
         return [r[0] for r in rows]
     except Exception:
@@ -164,10 +169,10 @@ def get_project_cabinets(project_id: int, platform: str | None = None) -> list[s
         return []
 
 
-def get_project_platforms(project_id: int) -> list[str]:
+def get_project_platforms(project_id: int, database: str) -> list[str]:
     """Площадки, представленные среди кабинетов проекта. При ошибке — []."""
     try:
-        client = get_client()
+        client = get_client(database=database)
         rows = client.query(
             "SELECT DISTINCT platform FROM project_cabinets FINAL WHERE project_id = {pid:UInt32} ORDER BY platform",
             parameters={"pid": int(project_id)},
@@ -301,7 +306,7 @@ def home():
 @login_required
 @project_access_required
 def project_dashboard(slug):
-    return render_template("dashboard.html", cabinets=get_project_cabinets(g.project["id"]))
+    return render_template("dashboard.html", cabinets=get_project_cabinets(g.project["id"], g.project["slug"]))
 
 
 # ---------------------------------------------------------------------------
@@ -315,11 +320,11 @@ SUPPORTED_PLATFORMS = {"wb"}
 
 
 def upload_form_context(project_id: int, slug: str, error: str | None = None) -> dict:
-    platforms = get_project_platforms(project_id)
+    platforms = get_project_platforms(project_id, slug)
     return {
         "error": error,
         "slug": slug,
-        "cabinets": get_project_cabinets(project_id, platform="wb"),
+        "cabinets": get_project_cabinets(project_id, slug, platform="wb"),
         "has_wb": "wb" in platforms,
         "other_platforms": [p for p in platforms if p not in SUPPORTED_PLATFORMS],
     }
@@ -370,7 +375,7 @@ def upload_detail(slug):
         logs.append(f"Пропущены не-xlsx файлы: {', '.join(skipped)}")
 
     try:
-        summary = ingest_files(saved_paths, cabinet, log=logs.append)
+        summary = ingest_files(saved_paths, cabinet, log=logs.append, database=g.project["slug"])
     except Exception as e:
         return render_template(
             "detail_result.html", error=str(e), summary=None, logs=logs, slug=slug,
@@ -412,8 +417,8 @@ def upload_summary(slug):
 
     logs = []
     try:
-        ingest_result = ingest_summary([dest], cabinet, log=logs.append)
-        client = get_client()
+        ingest_result = ingest_summary([dest], cabinet, log=logs.append, database=g.project["slug"])
+        client = get_client(database=g.project["slug"])
         reconcile_rows = run_reconciliation(client, cabinet, log=logs.append)
     except Exception as e:
         return render_template(

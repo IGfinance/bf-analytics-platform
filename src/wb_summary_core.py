@@ -121,12 +121,13 @@ def process_file(path: Path, cabinet: str, log=print) -> list[dict]:
     return rows
 
 
-def get_client():
+def get_client(database: str | None = None):
     host = os.environ["CLICKHOUSE_HOST"]
     port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
     user = os.environ.get("CLICKHOUSE_USER", "default")
     password = os.environ["CLICKHOUSE_PASSWORD"]
-    database = os.environ.get("CLICKHOUSE_DATABASE", "default")
+    if database is None:
+        database = os.environ.get("CLICKHOUSE_DATABASE", "default")
     secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
     return clickhouse_connect.get_client(
         host=host, port=port, username=user, password=password,
@@ -134,11 +135,14 @@ def get_client():
     )
 
 
-def ingest_files(files: list[Path], cabinet: str, log=print) -> dict:
+def ingest_files(files: list[Path], cabinet: str, log=print, database: str | None = None) -> dict:
     """
     Загружает список сводных xlsx-файлов в wb_report_summary.
     Возвращает сводку: {'files': N, 'rows': N}.
     Повторная загрузка того же report_number перезапишет запись (ReplacingMergeTree).
+
+    database — БД проекта (см. g.project["slug"] в webapp); None — читать
+    CLICKHOUSE_DATABASE из окружения, как раньше (CLI-скрипт ingest_wb.py).
     """
     all_rows = []
     for path in files:
@@ -149,7 +153,7 @@ def ingest_files(files: list[Path], cabinet: str, log=print) -> dict:
         log("Нет строк для загрузки.")
         return {"files": len(files), "rows": 0}
 
-    client = get_client()
+    client = get_client(database=database)
     data = [[row.get(col) for col in INSERT_COLUMNS] for row in all_rows]
     client.insert("wb_report_summary", data, column_names=INSERT_COLUMNS)
     log(f"Загружено {len(data)} строк в wb_report_summary.")

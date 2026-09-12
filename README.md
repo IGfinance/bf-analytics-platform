@@ -31,8 +31,8 @@
 │   ├── reconciliation_rules_wb.yaml  # правила сверки (формулы + допуски)
 │   ├── schema_wb.sql            # схема ClickHouse для сырых данных
 │   ├── schema_wb_summary.sql    # схема для сводных отчётов и результатов сверки
-│   ├── schema_projects.sql      # проекты, кабинеты, бренды
-│   ├── schema_users.sql         # пользователи, доступ к проектам
+│   ├── schema_control.sql       # control-БД: проекты, пользователи, доступ (общее для всех проектов)
+│   ├── schema_projects.sql      # кабинеты, бренды — внутри БД каждого проекта
 │   ├── schema_wb_metrics_views.sql  # VIEW с формулами метрик WB — источник истины для Metabase и AI-бота
 │   └── metabase_queries/        # SQL-запросы для дашбордов
 ├── webapp/                      # Flask-приложение (веб-форма, Flask-Login)

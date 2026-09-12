@@ -25,7 +25,7 @@ SCRIPT_DIR = Path(__file__).parent
 ROOT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
 
-from wb_core import get_client  # noqa: E402
+from ch_control import get_control_client  # noqa: E402
 
 load_dotenv(ROOT_DIR / ".env")
 
@@ -100,7 +100,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        client = get_client()
+        client = get_control_client()
     except Exception:
         log.exception("Не удалось подключиться к ClickHouse")
         sys.exit(1)

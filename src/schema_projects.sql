@@ -1,24 +1,17 @@
--- Реестр проектов (клиентов) и группировка кабинетов по проектам/брендам.
--- Термины см. в глоссарии: /019-04 FinanceBlackSite/work/glossary.md
+-- Группировка кабинетов площадок по проекту/брендам — применяется ВНУТРИ
+-- БД конкретного проекта (не control), см. schema_control.sql для
+-- projects/users/user_projects.
+-- Термины см. в глоссарии: docs/glossary.md
 --
 -- cabinet остаётся свободной строкой в wb_reports/wb_report_summary —
 -- источник истины по списку кабинетов по-прежнему
 -- SELECT DISTINCT cabinet FROM wb_reports (docs/tech-spec.md).
 -- Эти таблицы только группируют уже существующие кабинеты.
-
--- Проект — компания/клиент. Один кабинет принадлежит максимум одному
--- проекту: гарантируется тем, что cabinet — ключ дедупа
--- project_cabinets, а не часть составного ключа с project_id.
-CREATE TABLE IF NOT EXISTS projects
-(
-    id                UInt32,
-    slug              String,             -- для URL /p/<slug>/...
-    name              String,
-    telegram_chat_id  Nullable(String),   -- куда слать алерты
-    created_at        DateTime DEFAULT now()
-)
-ENGINE = ReplacingMergeTree(created_at)
-ORDER BY (id);
+--
+-- Один кабинет принадлежит максимум одному проекту: гарантируется тем,
+-- что cabinet — ключ дедупа project_cabinets, а не часть составного
+-- ключа с project_id (project_id внутри БД проекта теперь избыточен —
+-- сама БД и есть проект, но колонку не убираем, см. план разграничения).
 
 CREATE TABLE IF NOT EXISTS project_cabinets
 (
