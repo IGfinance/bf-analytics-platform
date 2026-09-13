@@ -18,6 +18,17 @@
 -- Отличия формул от адаптера ig-startup/adapter-wb — см. историю в
 -- wb_metrics_model.sql, не дублируем здесь.
 --
+-- ПРАВКА 2026-09-13 (найдено через reconciliation_rules_wb.yaml, сверка
+-- с wb_report_summary — см. её заметки у loyalty_program_cost/
+-- loyalty_points_deducted): sum_loyalty_cost и sum_loyalty_points считались
+-- простым sum() без вычета "Возврат" — как и sum_loyalty_comp до более
+-- ранней правки, это двойной счёт возвратов. Хуже: наивная замена на
+-- sumIf(Продажа)-sumIf(Возврат) (по образцу sum_loyalty_comp) молча теряла
+-- строки с document_type IS NULL — а в них в некоторых отчётах лежат
+-- реальные суммы (до ~4800₽ на отчёт). Формула "всего минус 2×возврат"
+-- учитывает Продажу/NULL/Возврат одним выражением и подтверждена точным
+-- совпадением (diff≤1e-8) с сводным отчётом на всех 66 парах отчётов.
+--
 -- `ALTER TABLE ... COMMENT COLUMN` ниже применяется к VIEW (не к обычной
 -- таблице) — команды не проверены на реальной версии ClickHouse на проде,
 -- накатывайте по одной и проверяйте `SELECT comment FROM system.columns
@@ -77,8 +88,10 @@ base AS (
 
         coalesce(sumIf(loyalty_discount_compensation, document_type = 'Продажа'), 0)
           - coalesce(sumIf(loyalty_discount_compensation, document_type = 'Возврат'), 0) AS sum_loyalty_comp,
-        coalesce(sum(loyalty_program_cost), 0) AS sum_loyalty_cost,
-        coalesce(sum(loyalty_points_deducted), 0) AS sum_loyalty_points
+        coalesce(sum(loyalty_program_cost), 0)
+          - 2 * coalesce(sumIf(loyalty_program_cost, document_type = 'Возврат'), 0) AS sum_loyalty_cost,
+        coalesce(sum(loyalty_points_deducted), 0)
+          - 2 * coalesce(sumIf(loyalty_points_deducted, document_type = 'Возврат'), 0) AS sum_loyalty_points
     FROM wb_reports
     WHERE sale_date IS NOT NULL
     GROUP BY cabinet, month
@@ -124,6 +137,6 @@ ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN commission_correction 'Д
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN storage_cost 'Хранение (storage_cost), знак инвертирован (расход).';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN acceptance_cost 'Платная приёмка — из acceptance_operations ("Операции на приемке"), НЕ из колонки "Платная приемка" — такой колонки нет в реальных выгрузках.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN deductions 'Удержание (deductions) за вычетом строк, относящихся к продвижению (см. promotion_cost) — иначе продвижение считалось бы дважды.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wibes_discount 'Скидка Wibes = loyalty_discount_compensation (продажа минус возврат) минус loyalty_program_cost минус loyalty_points_deducted. НЕ из wibes_discount_pct — эта колонка на 100% пустая в реальных выгрузках.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wibes_discount 'Скидка Wibes = loyalty_discount_compensation (продажа минус возврат) минус loyalty_program_cost минус loyalty_points_deducted — оба минус считаются как "всего минус 2×возврат" (сумма по document_type=Продажа/NULL минус сумма по Возврат), см. правку 2026-09-13 в заголовке файла. НЕ из wibes_discount_pct — эта колонка на 100% пустая в реальных выгрузках.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN promotion_cost '"Продвижение WB"/"Продвижение ВБ" объединены в одну метрику — одна и та же статья до/после ребрендинга WB.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. НЕ включает logistics_warehouse_compensation (см. её комментарий).';

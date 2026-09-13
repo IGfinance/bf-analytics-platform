@@ -65,14 +65,36 @@ rules:
     tolerance: 0.01
 
   - summary_column: "Стоимость участия в программе лояльности"
-    ch_expression: "coalesce(sum(loyalty_program_cost), 0)"
-    tolerance: 200
-    notes: "Наблюдаемые расхождения до ~57 руб.; может быть отрицательным (кредит от WB)."
+    ch_expression: >-
+      coalesce(sum(loyalty_program_cost), 0)
+      - 2 * coalesce(sumIf(loyalty_program_cost, document_type = 'Возврат'), 0)
+    tolerance: 0.01
+    notes: >-
+      Раньше sum() без вычета давал двойной счёт возвратов (расхождение до ~57 руб.,
+      как у loyalty_discount_compensation). Формула эквивалентна
+      sumIf(Продажа)+sumIf(прочие document_type, вкл. NULL)-sumIf(Возврат) — то есть
+      считает и строки с document_type IS NULL (см. заметку у loyalty_points_deducted),
+      просто через "всего минус 2×возврат", чтобы не терять NULL-строки явным списком
+      типов. Точное совпадение подтверждено на всех 66 парах отчётов (2026-09-13).
+      Может быть отрицательным (кредит от WB).
 
   - summary_column: "Сумма баллов, удержанных по программе лояльности"
-    ch_expression: "coalesce(sum(loyalty_points_deducted), 0)"
-    tolerance: 1500
-    notes: "Наблюдаемые расхождения до ~1140 руб. Та же природа что у loyalty_discount_compensation."
+    ch_expression: >-
+      coalesce(sum(loyalty_points_deducted), 0)
+      - 2 * coalesce(sumIf(loyalty_points_deducted, document_type = 'Возврат'), 0)
+    tolerance: 0.01
+    notes: >-
+      Тот же двойной счёт возвратов, что у loyalty_discount_compensation — НО здесь
+      наивная замена на sumIf(Продажа)-sumIf(Возврат) (по образцу
+      loyalty_discount_compensation) давала расхождение до ~4800 руб. в трёх последних
+      отчётах: в wb_reports есть строки с document_type IS NULL (тысячи строк на
+      отчёт, есть в КАЖДОМ отчёте — судя по всему служебные строки без типа
+      документа), и именно в этих трёх отчётах WB стал класть в них ненулевые суммы
+      по этому полю. sumIf(Продажа)-sumIf(Возврат) такие строки молча пропускает —
+      метрика реально терялась бы. Текущая формула ("всего минус 2×возврат")
+      включает NULL-строки автоматически и даёт diff ≤ 1e-8 (float-погрешность)
+      на всех 66 парах отчётов (2026-09-13). Источник истины — сводный отчёт,
+      сверено кросс-проверкой сырых данных против него, не наоборот.
 
   - summary_column: "Итого к оплате"
     ch_expression: >-
@@ -84,12 +106,16 @@ rules:
       - coalesce(sum(deductions), 0)
       - coalesce(sum(total_fines), 0)
       - coalesce(sum(wb_commission_correction), 0)
-      - coalesce(sum(loyalty_program_cost), 0)
-      - coalesce(sum(loyalty_points_deducted), 0)
-    tolerance: 3500
+      - (coalesce(sum(loyalty_program_cost), 0)
+         - 2 * coalesce(sumIf(loyalty_program_cost, document_type = 'Возврат'), 0))
+      - (coalesce(sum(loyalty_points_deducted), 0)
+         - 2 * coalesce(sumIf(loyalty_points_deducted, document_type = 'Возврат'), 0))
+    tolerance: 0.01
     notes: >-
-      Вычисляется из других полей. Расхождение Итого = сумма расхождений loyalty-полей
-      (loyalty_points + loyalty_cost). Tolerance = сумма их tolerance с запасом.
+      Вычисляется из других полей. После правки формул loyalty_program_cost и
+      loyalty_points_deducted (2026-09-13, см. их заметки) расхождение — чистая
+      float-погрешность (max 5.9e-8 на всех 66 парах отчётов), tolerance ужесточён
+      с 3500 до 0.01.
 
 # Пропущено (не агрегируемые или нечисловые):
 #   "Согласованная скидка, %"        — процент, нельзя суммировать
