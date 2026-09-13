@@ -30,17 +30,16 @@
 -- surcharges, storage_cost, promotion_cost, other_accruals, payable_total —
 -- совпадают с ozon_metrics_by_cabinet_month день-в-день (расхождение <1e-6 ₽).
 --
--- Ловушка, из-за которой sales_with_spp/returns_corrections поначалу не
--- сходились (на 2025 ₽ в январе, 2450 ₽ в марте, 6643 ₽ в апреле, зеркально
--- между метриками): операция OperationAgentStornoDeliveredToCustomer
--- ("Доставка покупателю — отмена начисления") в API помечена type='returns',
--- что выглядит как повод отнести её в "Возвраты" — НО в .xlsx-выгрузке
--- Ozon сам кладёт соответствующие строки внутрь группы "Продажи" (как
--- отрицательные строки accrual_type Выручка/Баллы за скидки/Программы
--- партнёров, проверено построчно в ozon_reports). Источник истины —
--- поведение .xlsx, а не ярлык type из API: поэтому accruals_for_sale
--- этой операции ниже относится в бакет "sales", а не "corrections",
--- вопреки собственной категоризации API.
+-- Операция OperationAgentStornoDeliveredToCustomer ("Доставка покупателю —
+-- отмена начисления") размечена в API как type='returns' — сюда, в
+-- corrections, она и попадает (accruals_for_sale идёт в sales только для
+-- type='orders'). В .xlsx-выгрузке Ozon те же события изначально лежат
+-- внутри группы "Продажи" отдельными отрицательными строками — чтобы
+-- sales_with_spp/returns_corrections совпадали именно по разбивке (а не
+-- только суммарно), ozon_metrics_by_cabinet_month (schema_ozon_metrics_views.sql)
+-- тоже переносит эти отрицательные строки из "Продажи" в corrections.
+-- Источник истины для разбивки — категоризация API (type='orders'/'returns'),
+-- .xlsx-формула подстроена под неё, не наоборот.
 --
 -- sales_amount/spp_amount по отдельности (как в ozon_reports-модели) здесь
 -- НЕ выведены — у API нет отдельного поля под "Баллы за скидки", есть
@@ -68,12 +67,12 @@ WITH standalone AS (
 ),
 bundled_fields AS (
     SELECT cabinet, toStartOfMonth(toDate(addHours(operation_date, 3))) AS month, 'sales' AS bucket,
-           if(operation_type IN ('OperationAgentDeliveredToCustomer','OperationAgentStornoDeliveredToCustomer'), accruals_for_sale, 0) AS value
+           if(type = 'orders', accruals_for_sale, 0) AS value
     FROM ozon_api_transactions FINAL
     WHERE operation_type IN ('OperationAgentDeliveredToCustomer','OperationItemReturn','ClientReturnAgentOperation','OperationAgentStornoDeliveredToCustomer')
     UNION ALL
     SELECT cabinet, toStartOfMonth(toDate(addHours(operation_date, 3))) AS month, 'corrections' AS bucket,
-           if(operation_type IN ('OperationItemReturn','ClientReturnAgentOperation'), accruals_for_sale, 0) AS value
+           if(type = 'returns', accruals_for_sale, 0) AS value
     FROM ozon_api_transactions FINAL
     WHERE operation_type IN ('OperationAgentDeliveredToCustomer','OperationItemReturn','ClientReturnAgentOperation','OperationAgentStornoDeliveredToCustomer')
     UNION ALL

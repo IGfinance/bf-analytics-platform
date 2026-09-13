@@ -22,6 +22,19 @@
 -- "Удержание" в оригинале — всегда 0 (не считается из данных, а
 -- подставляется в отчёте отдельно, там же где "Займы и факторинг") —
 -- сюда не включено вовсе, а не заведено как всегда-0 колонка.
+--
+-- ВТОРОЕ ОТЛИЧИЕ ОТ ОРИГИНАЛА (сверка с ozon_metrics_by_cabinet_month_api,
+-- см. schema_ozon_metrics_views_api.sql, 2026-09-13): группа "Продажи"
+-- иногда содержит ОТРИЦАТЕЛЬНЫЕ строки — сторно начисления за доставку
+-- покупателю после отмены заказа (в API это отдельная операция
+-- OperationAgentStornoDeliveredToCustomer с type='returns'). Оригинал
+-- считал их суммой вместе с обычной выручкой (net-эффект на sales_with_spp
+-- тот же), но по смыслу это возврат, а не продажа — и в API они размечены
+-- именно так. Здесь эти строки исключены из sales_spp/sales/spp и
+-- добавлены в corrections, чтобы "Выручка"/"Возвраты" по обоим источникам
+-- (API и .xlsx) совпадали не только в сумме, но и в разбивке по бакетам.
+-- payable_total (и payable_for_goods) от этой правки не меняется — сумма
+-- та же, меняется только то, в какой из двух метрик она сидит.
 
 CREATE VIEW IF NOT EXISTS ozon_metrics_by_cabinet_month AS
 WITH base AS (
@@ -32,11 +45,12 @@ WITH base AS (
         coalesce(sumIf(qty, service_group = 'Продажи' AND accrual_type = 'Выручка'), 0) AS q_sale,
         coalesce(sumIf(qty, service_group = 'Возвраты' AND accrual_type = 'Возврат выручки'), 0) AS q_ret,
 
-        coalesce(sumIf(total_amount, service_group = 'Продажи'), 0) AS sales_spp,
-        coalesce(sumIf(total_amount, service_group = 'Продажи' AND accrual_type IN ('Выручка', 'Программы партнёров')), 0) AS sales,
-        coalesce(sumIf(total_amount, service_group = 'Продажи' AND accrual_type = 'Баллы за скидки'), 0) AS spp,
+        coalesce(sumIf(total_amount, service_group = 'Продажи' AND total_amount >= 0), 0) AS sales_spp,
+        coalesce(sumIf(total_amount, service_group = 'Продажи' AND accrual_type IN ('Выручка', 'Программы партнёров') AND total_amount >= 0), 0) AS sales,
+        coalesce(sumIf(total_amount, service_group = 'Продажи' AND accrual_type = 'Баллы за скидки' AND total_amount >= 0), 0) AS spp,
         coalesce(sumIf(total_amount, service_group = 'Вознаграждение Ozon'), 0) AS commission,
-        coalesce(sumIf(total_amount, service_group = 'Возвраты'), 0) AS corrections,
+        coalesce(sumIf(total_amount, service_group = 'Возвраты'), 0)
+            + coalesce(sumIf(total_amount, service_group = 'Продажи' AND total_amount < 0), 0) AS corrections,
         coalesce(sumIf(total_amount, service_group = 'Услуги доставки'), 0) AS logistics,
         coalesce(sumIf(total_amount, service_group IN ('Услуги агентов', 'Услуги партнёров')), 0) AS last_mile,
         coalesce(sumIf(total_amount, service_group IN ('Другие услуги', 'Другие услуги и штрафы')), 0) AS fines,
@@ -75,11 +89,11 @@ ORDER BY cabinet, month;
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN cabinet 'Идентификатор личного кабинета Ozon (строка), связывается с project_cabinets.cabinet при platform=''ozon''.';
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN month 'Начало месяца начисления (по accrual_date из ozon_reports), время 12:00 — намеренно не 00:00, чтобы Report Timezone в Metabase не сдвигал 1-е число на конец предыдущего месяца (тот же приём, что в wb_metrics_by_cabinet_month).';
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN sales_qty 'Количество проданных единиц минус возвраты: qty группы "Продажи"/"Выручка" минус |qty| группы "Возвраты"/"Возврат выручки".';
-ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN sales_with_spp 'Выручка + СПП = сумма total_amount по ВСЕМ типам начисления внутри группы "Продажи" (Выручка + Программы партнёров + Баллы за скидки) — справочная метрика, не входит в payable_total напрямую (её компоненты sales_amount/spp_amount уже входят по отдельности).';
-ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN sales_amount 'Выручка = группа "Продажи", типы "Выручка" + "Программы партнёров".';
-ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN spp_amount 'СПП = группа "Продажи", тип "Баллы за скидки".';
+ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN sales_with_spp 'Выручка + СПП = сумма total_amount по ВСЕМ типам начисления внутри группы "Продажи" (Выручка + Программы партнёров + Баллы за скидки), КРОМЕ отрицательных строк (сторно начисления за доставку после отмены заказа — те уходят в returns_corrections, см. её комментарий) — справочная метрика, не входит в payable_total напрямую (её компоненты sales_amount/spp_amount уже входят по отдельности).';
+ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN sales_amount 'Выручка = группа "Продажи", типы "Выручка" + "Программы партнёров", total_amount >= 0.';
+ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN spp_amount 'СПП = группа "Продажи", тип "Баллы за скидки", total_amount >= 0.';
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN commission 'Комиссия Ozon = вся группа "Вознаграждение Ozon" (все типы начисления внутри неё).';
-ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN returns_corrections 'Корректировки, брак, потери и возвраты = вся группа "Возвраты" (все типы).';
+ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN returns_corrections 'Корректировки, брак, потери и возвраты = вся группа "Возвраты" (все типы) + отрицательные строки группы "Продажи" (сторно начисления за доставку покупателю после отмены заказа — в API это OperationAgentStornoDeliveredToCustomer с type=''returns'', см. schema_ozon_metrics_views_api.sql).';
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN payable_for_goods 'К перечислению за товар = sales_amount + spp_amount + commission + returns_corrections.';
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN logistics_cost 'Логистика = вся группа "Услуги доставки".';
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN last_mile_cost 'Последняя миля = группа "Услуги партнёров" (в старых выгрузках называлась "Услуги агентов" — Ozon переименовал; суммируем оба варианта названия на случай старых данных).';
