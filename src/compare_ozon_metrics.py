@@ -27,7 +27,7 @@ load_dotenv(SCRIPT_DIR.parent / ".env")
 
 from ozon_core import get_client  # noqa: E402
 
-TOLERANCE_RUB = 100.0
+TOLERANCE_RUB = 1.0  # OK только при расхождении < 1₽
 
 METRICS = [
     "sales_with_spp",
@@ -84,7 +84,7 @@ def run_comparison(client, cabinet: str, log=print) -> list[tuple]:
             a_val = a_metrics[metric]
             diff = abs(x_val - a_val)
             diff_pct = (diff / abs(x_val) * 100) if x_val else None
-            is_ok = 1 if diff <= TOLERANCE_RUB else 0
+            is_ok = 1 if diff < TOLERANCE_RUB else 0
 
             label = "OK" if is_ok else f"MISMATCH {diff:.2f}"
             log(f"  {month}  {metric:<20}  [{label:>18}]  xlsx={x_val:>14,.2f}  api={a_val:>14,.2f}")

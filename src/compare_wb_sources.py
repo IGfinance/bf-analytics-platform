@@ -24,19 +24,23 @@ load_dotenv(SCRIPT_DIR.parent / ".env")
 from wb_core import get_client  # noqa: E402
 
 # (метрика, xlsx-выражение, api-выражение, допуск в рублях/штуках)
+# Допуски унифицированы до 1 (₽ для денежных метрик, шт. для qty_vs_quantity) —
+# раньше были шире (100/100/50/10/10₽) и маскировали реальные расхождения между
+# WB API и .xlsx, которые ещё не разобраны (см. loyalty-баг в reconciliation_rules_wb.yaml
+# как пример того, что скрывает широкий tolerance).
 METRICS = [
     ("payable_to_seller_vs_ppvz_for_pay",
-     "sum(payable_to_seller)", "sum(ppvz_for_pay)", 100.0),
+     "sum(payable_to_seller)", "sum(ppvz_for_pay)", 1.0),
     ("wb_realized_amount_vs_retail_amount",
-     "sum(wb_realized_amount)", "sum(retail_amount)", 100.0),
+     "sum(wb_realized_amount)", "sum(retail_amount)", 1.0),
     ("qty_vs_quantity",
      "sum(qty)", "sum(quantity)", 1.0),
     ("delivery_service_cost_vs_delivery_rub",
-     "sum(delivery_service_cost)", "sum(delivery_rub)", 50.0),
+     "sum(delivery_service_cost)", "sum(delivery_rub)", 1.0),
     ("total_fines_vs_penalty",
-     "sum(total_fines)", "sum(penalty)", 10.0),
+     "sum(total_fines)", "sum(penalty)", 1.0),
     ("storage_cost_vs_storage_fee",
-     "sum(storage_cost)", "sum(storage_fee)", 10.0),
+     "sum(storage_cost)", "sum(storage_fee)", 1.0),
 ]
 
 
@@ -50,7 +54,7 @@ def fetch_xlsx_by_month(client, cabinet: str) -> dict:
         ORDER BY month
     """
     rows = client.query(sql, parameters={"cabinet": cabinet}).result_rows
-    return {r[0]: r[1:] for r in rows}
+    return {r[0]: r[1:] for r in rows if r[0] is not None}
 
 
 def fetch_api_by_month(client, cabinet: str) -> dict:
@@ -63,7 +67,7 @@ def fetch_api_by_month(client, cabinet: str) -> dict:
         ORDER BY month
     """
     rows = client.query(sql, parameters={"cabinet": cabinet}).result_rows
-    return {r[0]: r[1:] for r in rows}
+    return {r[0]: r[1:] for r in rows if r[0] is not None}
 
 
 def run_comparison(client, cabinet: str, log=print) -> list[tuple]:
@@ -88,7 +92,7 @@ def run_comparison(client, cabinet: str, log=print) -> list[tuple]:
             a_val = float(api_vals[i]) if api_vals and api_vals[i] is not None else 0.0
             diff = abs(x_val - a_val)
             diff_pct = (diff / abs(x_val) * 100) if x_val else None
-            is_ok = 1 if diff <= tolerance else 0
+            is_ok = 1 if diff < tolerance else 0
 
             label = "OK" if is_ok else f"MISMATCH {diff:.2f}"
             log(f"      [{label:>18}] {metric:<40} xlsx={x_val:>14,.2f}  api={a_val:>14,.2f}")
