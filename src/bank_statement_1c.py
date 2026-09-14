@@ -17,7 +17,17 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+import clickhouse_connect
+
 SCRIPT_DIR = Path(__file__).parent
+
+COLUMNS = [
+    "project_id", "account_number", "source_bank", "doc_type", "doc_number",
+    "doc_date", "effective_date", "direction", "amount", "signed_amount",
+    "counterparty", "counterparty_inn", "counterparty_account", "counterparty_bank",
+    "counterparty_bik", "counterparty_kpp", "payment_purpose", "payment_kind",
+    "priority", "row_num", "extra_columns", "source_file",
+]
 
 CANONICAL_KEYS = {
     "Номер", "Дата", "Сумма",
@@ -155,6 +165,52 @@ def parse_dir(input_dir: Path) -> list[dict]:
     for path in sorted(input_dir.glob("*.txt")):
         rows.extend(parse_1c_file(path))
     return rows
+
+
+def get_client(database: str | None = None):
+    host = os.environ["CLICKHOUSE_HOST"]
+    port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
+    user = os.environ.get("CLICKHOUSE_USER", "default")
+    password = os.environ["CLICKHOUSE_PASSWORD"]
+    if database is None:
+        database = os.environ.get("CLICKHOUSE_DATABASE", "default")
+    secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
+    return clickhouse_connect.get_client(
+        host=host, port=port, username=user, password=password,
+        database=database, secure=secure,
+    )
+
+
+def ingest_files(files: list[Path], project_id: int, log=print, database: str | None = None) -> dict:
+    """Разбирает txt-выписки 1С и загружает их в ClickHouse. Возвращает сводку.
+
+    database — БД проекта, которому принадлежит project_id (см. g.project["slug"]
+    в webapp); None — читать CLICKHOUSE_DATABASE из окружения, как раньше
+    (используется CLI-скриптом ingest_bank_statements.py).
+    """
+    all_rows = []
+    for path in files:
+        log(f"  Читаю: {path.name}")
+        all_rows.extend(parse_1c_file(path))
+
+    if not all_rows:
+        raise ValueError("Не найдено ни одной транзакции")
+
+    for row in all_rows:
+        row["project_id"] = project_id
+
+    extra_keys = sorted({k for r in all_rows for k in r["extra_columns"]})
+
+    client = get_client(database=database)
+    data = [[row.get(col) for col in COLUMNS] for row in all_rows]
+    client.insert("bank_statements", data, column_names=COLUMNS)
+    log(f"Загружено {len(data)} строк в bank_statements.")
+
+    return {
+        "files": len(files),
+        "rows": len(data),
+        "extra_columns": extra_keys,
+    }
 
 
 if __name__ == "__main__":

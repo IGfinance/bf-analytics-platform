@@ -1,18 +1,22 @@
 {# Единый шаблон карточки загрузки: заголовок, описание фикс. высоты, файл, кнопка.
    Параметры: card_title, card_description, card_action, card_input_id,
-   card_input_name, card_multiple (bool). Кабинет — общее поле снаружи
-   (partials/cabinet_field.html), сюда попадает через hidden-зеркало,
-   синхронизируемое shell.js (data-cabinet-shared/data-cabinet-mirror). #}
+   card_input_name, card_multiple (bool). card_accept — расширение (default
+   .xlsx). card_needs_cabinet (default true) — включать hidden-зеркало кабинета
+   (WB); для источников без кабинета (банк/карты) передавать false. Кабинет —
+   общее поле снаружи (partials/cabinet_field.html), сюда попадает через
+   hidden-зеркало, синхронизируемое shell.js (data-cabinet-shared/data-cabinet-mirror). #}
+{% set card_accept = card_accept|default(".xlsx") %}
+{% set card_needs_cabinet = card_needs_cabinet|default(true) %}
 <div class="bg-surface border border-border rounded-2xl p-6">
   <h2 class="text-lg font-bold font-montserrat">{{ card_title }}</h2>
   <p class="text-sm text-secondary mt-1 min-h-[2.5rem]">{{ card_description }}</p>
 
   <form action="{{ card_action }}" method="post" enctype="multipart/form-data" class="mt-4">
-    <input type="hidden" name="cabinet" data-cabinet-mirror>
+    {% if card_needs_cabinet %}<input type="hidden" name="cabinet" data-cabinet-mirror>{% endif %}
 
     <div>
-      <label for="{{ card_input_id }}" class="text-sm font-semibold">Файлы (.xlsx)</label>
-      <input type="file" id="{{ card_input_id }}" name="{{ card_input_name }}" accept=".xlsx"
+      <label for="{{ card_input_id }}" class="text-sm font-semibold">Файлы ({{ card_accept }})</label>
+      <input type="file" id="{{ card_input_id }}" name="{{ card_input_name }}" accept="{{ card_accept }}"
              {% if card_multiple %}multiple{% endif %} required
              class="block w-full mt-2 text-sm text-secondary
                     file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0

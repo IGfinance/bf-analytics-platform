@@ -8,45 +8,14 @@ CLI-обёртка над card_statement_pdf.py.
 """
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
-import clickhouse_connect
 from dotenv import load_dotenv
 
-from card_statement_pdf import parse_dir, SCRIPT_DIR
+from card_statement_pdf import parse_dir, ingest_files, SCRIPT_DIR
 
 load_dotenv(SCRIPT_DIR.parent / ".env")  # .env лежит в корне репозитория, на уровень выше src/
-
-COLUMNS = [
-    "project_id", "cardholder", "source_bank", "account_number", "card_number",
-    "operation_date", "processing_date", "amount", "signed_amount", "description",
-    "row_num", "source_file",
-]
-
-
-def get_client():
-    host = os.environ["CLICKHOUSE_HOST"]
-    port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
-    user = os.environ.get("CLICKHOUSE_USER", "default")
-    password = os.environ["CLICKHOUSE_PASSWORD"]
-    database = os.environ.get("CLICKHOUSE_DATABASE", "default")
-    secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
-    return clickhouse_connect.get_client(
-        host=host, port=port, username=user, password=password,
-        database=database, secure=secure,
-    )
-
-
-def to_date(value: str):
-    if not value:
-        return None
-    from datetime import datetime
-    try:
-        return datetime.strptime(value, "%d.%m.%Y").date()
-    except ValueError:
-        return None
 
 
 def main():
@@ -61,29 +30,26 @@ def main():
         print(f"Ошибка: не найдена папка {input_dir}", file=sys.stderr)
         sys.exit(1)
 
-    rows = parse_dir(input_dir)
-    if not rows:
-        print("Ошибка: не найдено ни одной транзакции", file=sys.stderr)
-        sys.exit(1)
-
-    for row in rows:
-        row["project_id"] = args.project_id
-        row["operation_date"] = to_date(row["operation_date"])
-        row["processing_date"] = to_date(row["processing_date"])
-
-    cardholders = sorted({r["cardholder"] for r in rows if r["cardholder"]})
-    files_count = len(list(input_dir.glob("*.pdf")))
-    print(f"Файлов: {files_count}, строк: {len(rows)}")
-    print(f"Держатели карт: {cardholders}")
-
     if args.dry_run:
+        rows = parse_dir(input_dir)
+        if not rows:
+            print("Ошибка: не найдено ни одной транзакции", file=sys.stderr)
+            sys.exit(1)
+        cardholders = sorted({r["cardholder"] for r in rows if r["cardholder"]})
+        files_count = len(list(input_dir.glob("*.pdf")))
+        print(f"Файлов: {files_count}, строк: {len(rows)}")
+        print(f"Держатели карт: {cardholders}")
         print("Dry-run: в ClickHouse ничего не пишу.")
         return
 
-    client = get_client()
-    data = [[row.get(col) for col in COLUMNS] for row in rows]
-    client.insert("card_statements", data, column_names=COLUMNS)
-    print(f"Загружено {len(data)} строк в card_statements.")
+    files = sorted(input_dir.glob("*.pdf"))
+    try:
+        summary = ingest_files(files, project_id=args.project_id)
+    except ValueError as e:
+        print(f"Ошибка: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Файлов: {summary['files']}, строк: {summary['rows']}")
+    print(f"Держатели карт: {summary['cardholders']}")
 
 
 if __name__ == "__main__":

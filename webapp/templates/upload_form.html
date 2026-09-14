@@ -42,4 +42,28 @@
       <p class="text-sm text-secondary mt-1">Площадка пока не поддерживается — адаптер загрузки ещё не реализован.</p>
     </div>
   {% endfor %}
+
+  {% if sources %}
+    <h2 class="text-xl font-bold font-montserrat mt-10">Источники данных</h2>
+    <div class="grid gap-6 mt-6 lg:grid-cols-2">
+      {% for s in sources %}
+        {% if s.supported %}
+          {% set card_title = s.label %}
+          {% set card_description = s.description %}
+          {% set card_action = s.action %}
+          {% set card_input_id = "files-" + s.key %}
+          {% set card_input_name = "files" %}
+          {% set card_multiple = true %}
+          {% set card_accept = s.accept %}
+          {% set card_needs_cabinet = false %}
+          {% include "partials/upload_card.html" %}
+        {% else %}
+          <div class="bg-surface border border-border rounded-2xl p-6 opacity-50">
+            <h2 class="text-lg font-bold font-montserrat">{{ s.label }}</h2>
+            <p class="text-sm text-secondary mt-1">Источник пока не поддерживается — адаптер загрузки ещё не реализован.</p>
+          </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% endif %}
 {% endblock %}

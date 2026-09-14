@@ -8,6 +8,8 @@
   GET  /p/<slug>/upload     — форма загрузки отчётов
   POST /p/<slug>/upload/detail  — обработка детального отчёта
   POST /p/<slug>/upload/summary — обработка сводного отчёта + сверка
+  POST /p/<slug>/upload/bank    — банковская выписка 1С (txt)
+  POST /p/<slug>/upload/card    — карточная выписка (PDF)
   GET  /profile             — профиль пользователя
   GET/POST /login — вход
   POST /logout    — выход
@@ -43,6 +45,8 @@ load_dotenv(WEBAPP_DIR / ".env")       # секреты веб-формы (мо�
 
 from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
+from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
+from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
 from reconcile_wb import run_reconciliation            # noqa: E402
 from auth import authenticate, login_manager            # noqa: E402
 from ch_control import get_control_client              # noqa: E402
@@ -183,6 +187,26 @@ def get_project_platforms(project_id: int, database: str) -> list[str]:
         return []
 
 
+def get_project_sources(project_id: int, database: str) -> list[str]:
+    """Источники данных, включённые у проекта (project_sources). При ошибке — [].
+
+    Аналог get_project_platforms, но для источников без концепции кабинета
+    (банк, карты, Клиентикс, Google-Таблицы). project_sources живёт внутри
+    БД проекта, не в control. try/except → [], чтобы отсутствие таблицы или
+    сбой не ронял страницу загрузки.
+    """
+    try:
+        client = get_client(database=database)
+        rows = client.query(
+            "SELECT DISTINCT source FROM project_sources FINAL WHERE project_id = {pid:UInt32} ORDER BY source",
+            parameters={"pid": int(project_id)},
+        ).result_rows
+        return [r[0] for r in rows]
+    except Exception:
+        log.exception("Не удалось получить источники проекта id=%s", project_id)
+        return []
+
+
 def project_access_required(view):
     """Резолвит slug из URL в g.project и проверяет доступ через user_projects.
 
@@ -226,7 +250,7 @@ def build_top_nav() -> list[dict]:
         items.append({
             "label": "Загрузка", "icon": "upload",
             "href": url_for("upload_page", slug=slug),
-            "active": endpoint in ("upload_page", "upload_detail", "upload_summary"),
+            "active": endpoint in ("upload_page", "upload_detail", "upload_summary", "upload_bank", "upload_card"),
         })
     else:
         items.append({"label": "Дашборд", "icon": "layout-dashboard", "href": None, "active": False})
@@ -318,6 +342,44 @@ def project_dashboard(slug):
 # рендерятся как disabled-заглушка на /p/<slug>/upload.
 SUPPORTED_PLATFORMS = {"wb"}
 
+# Источники (project_sources), которые код умеет парсить и грузить. Источник,
+# включённый у проекта, но не отсюда, рендерится как disabled-заглушка
+# (аналог other_platforms). SOURCE_META — метаданные для UI и роутинга;
+# supported = наличие endpoint (совпадает с SUPPORTED_SOURCES).
+SOURCE_META = {
+    "bank_1c": {"label": "Банковская выписка 1С", "accept": ".txt",
+                "endpoint": "upload_bank", "description":
+                "Файлы выписок 1С (txt) — данные сохранятся в bank_statements."},
+    "card_pdf": {"label": "Карточная выписка PDF", "accept": ".pdf",
+                 "endpoint": "upload_card", "description":
+                 "PDF-справки о движении средств по картам — данные сохранятся в card_statements."},
+    "klientiks": {"label": "Выгрузка Клиентикс"},
+    "gsheets_payroll": {"label": "Google-Таблица «Зарплаты»"},
+    "gsheets_expenses": {"label": "Google-Таблица «Расходы по статьям»"},
+}
+SUPPORTED_SOURCES = {key for key, meta in SOURCE_META.items() if "endpoint" in meta}
+
+
+def build_source_cards(project_id: int, slug: str) -> list[dict]:
+    """Карточки источников для страницы загрузки — по включённым в project_sources.
+
+    Источник в SUPPORTED_SOURCES → активная форма (action/accept/multiple);
+    остальные (включены у проекта, но код ещё не умеет) → disabled-заглушка.
+    """
+    cards = []
+    for src in get_project_sources(project_id, slug):
+        meta = SOURCE_META.get(src, {})
+        supported = src in SUPPORTED_SOURCES
+        cards.append({
+            "key": src,
+            "label": meta.get("label", src),
+            "description": meta.get("description", ""),
+            "accept": meta.get("accept"),
+            "supported": supported,
+            "action": url_for(meta["endpoint"], slug=slug) if supported else None,
+        })
+    return cards
+
 
 def upload_form_context(project_id: int, slug: str, error: str | None = None) -> dict:
     platforms = get_project_platforms(project_id, slug)
@@ -327,6 +389,7 @@ def upload_form_context(project_id: int, slug: str, error: str | None = None) ->
         "cabinets": get_project_cabinets(project_id, slug, platform="wb"),
         "has_wb": "wb" in platforms,
         "other_platforms": [p for p in platforms if p not in SUPPORTED_PLATFORMS],
+        "sources": build_source_cards(project_id, slug),
     }
 
 
@@ -446,6 +509,74 @@ def upload_summary(slug):
         logs=logs,
         slug=slug,
     )
+
+
+def handle_source_upload(slug: str, ext: str, ingest_fn, source_label: str):
+    """Общая обработка загрузки источника без кабинета (банк/карты).
+
+    ext — допустимое расширение (.txt/.pdf); ingest_fn — ingest_files
+    соответствующего модуля (принимает files, project_id, log, database).
+    Ошибки не роняют форму: битый файл/сбой ClickHouse → source_result с 500,
+    отсутствие файлов → форма загрузки с 400.
+    """
+    files = request.files.getlist("files")
+    if not files or all(f.filename == "" for f in files):
+        return render_template(
+            "upload_form.html",
+            **upload_form_context(g.project["id"], slug, "Выберите хотя бы один файл"),
+        ), 400
+
+    saved_paths, skipped = [], []
+    for f in files:
+        filename = safe_filename(f.filename)
+        if not filename.lower().endswith(ext):
+            skipped.append(f.filename)
+            continue
+        dest = UPLOAD_DIR / filename
+        f.save(dest)
+        saved_paths.append(dest)
+
+    if not saved_paths:
+        return render_template(
+            "upload_form.html",
+            **upload_form_context(g.project["id"], slug, f"Ни одного {ext} файла не найдено"),
+        ), 400
+
+    logs = []
+    if skipped:
+        logs.append(f"Пропущены файлы не-{ext}: {', '.join(skipped)}")
+
+    try:
+        summary = ingest_fn(
+            saved_paths, project_id=g.project["id"], log=logs.append, database=g.project["slug"],
+        )
+    except Exception as e:
+        return render_template(
+            "source_result.html", error=str(e), summary=None, logs=logs,
+            slug=slug, source_label=source_label,
+        ), 500
+    finally:
+        for p in saved_paths:
+            p.unlink(missing_ok=True)
+
+    return render_template(
+        "source_result.html", error=None, summary=summary, logs=logs,
+        slug=slug, source_label=source_label,
+    )
+
+
+@app.route("/p/<slug>/upload/bank", methods=["POST"])
+@login_required
+@project_access_required
+def upload_bank(slug):
+    return handle_source_upload(slug, ".txt", ingest_bank, "Банковская выписка 1С")
+
+
+@app.route("/p/<slug>/upload/card", methods=["POST"])
+@login_required
+@project_access_required
+def upload_card(slug):
+    return handle_source_upload(slug, ".pdf", ingest_card, "Карточная выписка PDF")
 
 
 # ---------------------------------------------------------------------------
