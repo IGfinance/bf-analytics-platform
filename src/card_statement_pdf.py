@@ -19,11 +19,21 @@ xlsx с 5 колонками для общего конвертера, а зде
 него, для остальных банков возвращает None (не блокирует парсинг транзакций).
 """
 
+import os
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
+import clickhouse_connect
+
 SCRIPT_DIR = Path(__file__).parent
+
+COLUMNS = [
+    "project_id", "cardholder", "source_bank", "account_number", "card_number",
+    "operation_date", "processing_date", "amount", "signed_amount", "description",
+    "row_num", "source_file",
+]
 
 
 def extract_text(pdf_path: str, layout: bool = True) -> str:
@@ -795,6 +805,63 @@ def parse_dir(input_dir: Path) -> list[dict]:
     for path in sorted(input_dir.glob("*.pdf")):
         rows.extend(parse_pdf(path))
     return rows
+
+
+def to_date(value: str):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def get_client(database: str | None = None):
+    host = os.environ["CLICKHOUSE_HOST"]
+    port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
+    user = os.environ.get("CLICKHOUSE_USER", "default")
+    password = os.environ["CLICKHOUSE_PASSWORD"]
+    if database is None:
+        database = os.environ.get("CLICKHOUSE_DATABASE", "default")
+    secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
+    return clickhouse_connect.get_client(
+        host=host, port=port, username=user, password=password,
+        database=database, secure=secure,
+    )
+
+
+def ingest_files(files: list[Path], project_id: int, log=print, database: str | None = None) -> dict:
+    """Разбирает PDF-справки по картам и загружает их в ClickHouse. Возвращает сводку.
+
+    database — БД проекта, которому принадлежит project_id (см. g.project["slug"]
+    в webapp); None — читать CLICKHOUSE_DATABASE из окружения, как раньше
+    (используется CLI-скриптом ingest_card_statements.py).
+    """
+    all_rows = []
+    for path in files:
+        log(f"  Читаю: {path.name}")
+        all_rows.extend(parse_pdf(path))
+
+    if not all_rows:
+        raise ValueError("Не найдено ни одной транзакции")
+
+    for row in all_rows:
+        row["project_id"] = project_id
+        row["operation_date"] = to_date(row["operation_date"])
+        row["processing_date"] = to_date(row["processing_date"])
+
+    cardholders = sorted({r["cardholder"] for r in all_rows if r["cardholder"]})
+
+    client = get_client(database=database)
+    data = [[row.get(col) for col in COLUMNS] for row in all_rows]
+    client.insert("card_statements", data, column_names=COLUMNS)
+    log(f"Загружено {len(data)} строк в card_statements.")
+
+    return {
+        "files": len(files),
+        "rows": len(data),
+        "cardholders": cardholders,
+    }
 
 
 if __name__ == "__main__":
