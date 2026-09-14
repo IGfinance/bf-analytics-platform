@@ -38,7 +38,6 @@ SELECT
     payable_for_goods                AS "К перечислению за товар",
     logistics_direct                 AS "Логистика прямая",
     logistics_reverse                AS "Логистика обратная",
-    logistics_warehouse_compensation AS "Компенсация логистики склада",
     fines                            AS "Штрафы",
     commission_correction            AS "Доплаты",
     storage_cost                     AS "Хранение",

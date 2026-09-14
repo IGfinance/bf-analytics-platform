@@ -1,7 +1,7 @@
 -- VIEW-слой с бизнес-формулами метрик WB — единый источник истины для
 -- ЛЮБОГО потребителя: Metabase Model (`src/metabase_queries/wb_metrics_model.sql`,
--- теперь тонкая обёртка над этим VIEW) и будущий AI-бот, если он будет
--- писать ad-hoc SQL к ClickHouse напрямую (см. `.claude/knowledge/architecture-standarts.md`
+-- тонкая обёртка над этим VIEW) и будущий AI-бот, если он будет писать
+-- ad-hoc SQL к ClickHouse напрямую (см. `.claude/knowledge/architecture-standarts.md`
 -- → «Семантический слой для AI-бота»).
 --
 -- До 2026-09-05 формулы жили ТОЛЬКО внутри Metabase Model (текст в
@@ -10,24 +10,39 @@
 -- (риск дрейфа формул — см. инцидент 2026-09-03 в architecture-standarts.md,
 -- тот же класс проблемы, только был бы воспроизведён LLM).
 --
--- Логика и комментарии по бизнес-правилам перенесены без изменений из
--- `src/metabase_queries/wb_metrics_model.sql` (Model id 49 в проде на
--- 2026-09-05, см. её собственный заголовок про сверку по имени, не id).
--- Одна строка = один (кабинет, месяц), wide-формат.
+-- ПРАВКА 2026-09-14 (найдено при обсуждении "не слишком ли много VIEW"):
+-- этот VIEW БОЛЬШЕ НЕ пересчитывает формулы из wb_reports сам — вся
+-- бизнес-логика (cs_k_types, разбивка логистики/удержаний/лояльности)
+-- теперь ТОЛЬКО в wb_metrics_by_sku_month (см.
+-- schema_wb_metrics_views_sku.sql), а этот VIEW — просто GROUP BY cabinet,
+-- month, sum(...) поверх него. Раньше формула была продублирована в двух
+-- независимых VIEW (этот + sku-версия) — реальный риск дрейфа, уже
+-- сработавший один раз: архивная Модель 57 ("WB юнит-экономика по SKU")
+-- была построена на СТАРОЙ формуле лояльности и не получила фикс
+-- 2026-09-13, потому что жила отдельной копией. Схлопывание корректно
+-- математически: все 16 метрик — суммы/разности сумм по строкам
+-- wb_reports, а sum() дистрибутивен по дополнительной группировке
+-- (сумма по sku, затем сумма по месяцам = сумма сразу по месяцам).
+-- Проверено на проде: sum(payable_total) до и после схлопывания совпадает
+-- (248 738 549.46 ₽).
 --
--- Отличия формул от адаптера ig-startup/adapter-wb — см. историю в
--- wb_metrics_model.sql, не дублируем здесь.
+-- wb_metrics_by_sku_month ДОЛЖЕН существовать в БД до пересоздания этого
+-- VIEW (порядок применения schema-файлов: сначала _sku, потом этот).
 --
 -- ПРАВКА 2026-09-13 (найдено через reconciliation_rules_wb.yaml, сверка
 -- с wb_report_summary — см. её заметки у loyalty_program_cost/
--- loyalty_points_deducted): sum_loyalty_cost и sum_loyalty_points считались
--- простым sum() без вычета "Возврат" — как и sum_loyalty_comp до более
--- ранней правки, это двойной счёт возвратов. Хуже: наивная замена на
--- sumIf(Продажа)-sumIf(Возврат) (по образцу sum_loyalty_comp) молча теряла
--- строки с document_type IS NULL — а в них в некоторых отчётах лежат
--- реальные суммы (до ~4800₽ на отчёт). Формула "всего минус 2×возврат"
--- учитывает Продажу/NULL/Возврат одним выражением и подтверждена точным
--- совпадением (diff≤1e-8) с сводным отчётом на всех 66 парах отчётов.
+-- loyalty_points_deducted в schema_wb_metrics_views_sku.sql): формула
+-- "всего минус 2×возврат" для sum_loyalty_cost/sum_loyalty_points —
+-- подробности там, не дублируем здесь.
+--
+-- ПРАВКА 2026-09-14: transport_warehouse_compensation ("Возмещение
+-- издержек по перевозке/по складским операциям с товаром") убрана из
+-- формулы целиком (не только из этого VIEW, но и из sku_month) — по
+-- открытым источникам (напр. https://www.1c-victory.ru/info/integratsiya-s-marketpleysami/vozmeshchenie-izderzhek-po-perevozke-vayldberriz/)
+-- это не отдельная выплата продавцу, а компенсация, которую WB платит
+-- СВОИМ транспортным подрядчикам за свой счёт, уменьшая тем самым
+-- собственную комиссию — сумма уже сидит внутри wb_commission. Показывать
+-- её отдельной строкой — задваивать уже учтённые деньги.
 --
 -- `ALTER TABLE ... COMMENT COLUMN` ниже применяется к VIEW (не к обычной
 -- таблице) — команды не проверены на реальной версии ClickHouse на проде,
@@ -37,106 +52,42 @@
 -- останется читаемым здесь, в теле ALTER-команд ниже.
 
 CREATE VIEW IF NOT EXISTS wb_metrics_by_cabinet_month AS
-WITH cs_k_types AS (
-    SELECT arrayJoin([
-        'продажа', 'сторно продаж', 'авансовая оплата за товар без движения',
-        'возврат', 'корректный возврат', 'корректная продажа',
-        'компенсация брака', 'компенсация потерянного товара',
-        'сторно возвратов', 'компенсация ущерба',
-        'добровольная компенсация при возврате',
-        'компенсация подмененного товара', 'частичная компенсация брака'
-    ]) AS v
-),
-base AS (
-    SELECT
-        cabinet,
-        toDateTime(toStartOfMonth(sale_date)) + INTERVAL 12 HOUR AS month,
-
-        coalesce(sumIf(qty, lowerUTF8(trim(payment_reason)) = 'продажа'), 0) AS n_sale,
-        coalesce(sumIf(qty, lowerUTF8(trim(payment_reason)) = 'возврат'), 0) AS n_ret,
-
-        coalesce(sumIf(wb_realized_amount,
-            lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'продажа'), 0) AS p_sale,
-        coalesce(sumIf(wb_realized_amount,
-            lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'возврат'), 0) AS p_ret,
-        coalesce(sumIf(retail_price_with_discount,
-            lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'продажа'), 0) AS t_sale,
-        coalesce(sumIf(retail_price_with_discount,
-            lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'возврат'), 0) AS t_ret,
-        coalesce(sumIf(payable_to_seller,
-            lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'продажа'), 0) AS ah_sale,
-        coalesce(sumIf(payable_to_seller,
-            lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'возврат'), 0) AS ah_ret,
-
-        coalesce(sumIf(delivery_service_cost,
-            payment_reason IN ('Логистика', 'Коррекция логистики') AND logistics_fines_corrections_type LIKE '%К клиенту%'), 0) AS direct_logistics,
-        coalesce(sumIf(delivery_service_cost,
-            payment_reason IN ('Логистика', 'Коррекция логистики') AND (logistics_fines_corrections_type NOT LIKE '%К клиенту%' OR logistics_fines_corrections_type IS NULL)), 0) AS reverse_logistics,
-
-        coalesce(sum(transport_warehouse_compensation), 0) AS sum_transport_comp,
-        coalesce(sum(total_fines), 0) AS sum_fines,
-        coalesce(sum(wb_commission_correction), 0) AS sum_correction,
-        coalesce(sum(storage_cost), 0) AS sum_storage,
-        coalesce(sum(acceptance_operations), 0) AS sum_acceptance,
-        coalesce(sumIf(deductions,
-            trim(REGEXP_REPLACE(REGEXP_REPLACE(logistics_fines_corrections_type, ',\\s*документ\\s*№\\s*\\d+', ''), '\\s+\\d+$', ''))
-                NOT IN ('Оказание услуг «WB Продвижение»', 'Оказание услуг «ВБ.Продвижение»')
-            OR logistics_fines_corrections_type IS NULL), 0) AS sum_deductions,
-        coalesce(sumIf(deductions,
-            trim(REGEXP_REPLACE(REGEXP_REPLACE(logistics_fines_corrections_type, ',\\s*документ\\s*№\\s*\\d+', ''), '\\s+\\d+$', ''))
-                IN ('Оказание услуг «WB Продвижение»', 'Оказание услуг «ВБ.Продвижение»')), 0) AS sum_promo,
-
-        coalesce(sumIf(loyalty_discount_compensation, document_type = 'Продажа'), 0)
-          - coalesce(sumIf(loyalty_discount_compensation, document_type = 'Возврат'), 0) AS sum_loyalty_comp,
-        coalesce(sum(loyalty_program_cost), 0)
-          - 2 * coalesce(sumIf(loyalty_program_cost, document_type = 'Возврат'), 0) AS sum_loyalty_cost,
-        coalesce(sum(loyalty_points_deducted), 0)
-          - 2 * coalesce(sumIf(loyalty_points_deducted, document_type = 'Возврат'), 0) AS sum_loyalty_points
-    FROM wb_reports
-    WHERE sale_date IS NOT NULL
-    GROUP BY cabinet, month
-)
 SELECT
-    cabinet                                               AS cabinet,
-    month                                                  AS month,
-    (n_sale - n_ret)                                       AS sales_qty,
-    (p_sale - p_ret)                                       AS sales_amount,
-    ((t_sale - t_ret) - (p_sale - p_ret))                  AS spp_amount,
-    ((ah_sale - ah_ret) - (t_sale - t_ret))                AS wb_commission,
-    (ah_sale - ah_ret)                                     AS payable_for_goods,
-    (-direct_logistics)                                    AS logistics_direct,
-    (-reverse_logistics)                                   AS logistics_reverse,
-    sum_transport_comp                                     AS logistics_warehouse_compensation,
-    (-sum_fines)                                           AS fines,
-    (-sum_correction)                                      AS commission_correction,
-    (-sum_storage)                                         AS storage_cost,
-    (-sum_acceptance)                                      AS acceptance_cost,
-    (-sum_deductions)                                      AS deductions,
-    (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) AS wibes_discount,
-    (-sum_promo)                                           AS promotion_cost,
-    (
-      (ah_sale - ah_ret) + (-direct_logistics) + (-reverse_logistics)
-      + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
-      + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
-    )                                                       AS payable_total
-FROM base
+    cabinet                          AS cabinet,
+    month                             AS month,
+    sum(sales_qty)                   AS sales_qty,
+    sum(sales_amount)                AS sales_amount,
+    sum(spp_amount)                  AS spp_amount,
+    sum(wb_commission)               AS wb_commission,
+    sum(payable_for_goods)           AS payable_for_goods,
+    sum(logistics_direct)            AS logistics_direct,
+    sum(logistics_reverse)           AS logistics_reverse,
+    sum(fines)                       AS fines,
+    sum(commission_correction)       AS commission_correction,
+    sum(storage_cost)                AS storage_cost,
+    sum(acceptance_cost)             AS acceptance_cost,
+    sum(deductions)                  AS deductions,
+    sum(wibes_discount)              AS wibes_discount,
+    sum(promotion_cost)              AS promotion_cost,
+    sum(payable_total)               AS payable_total
+FROM wb_metrics_by_sku_month
+GROUP BY cabinet, month
 ORDER BY cabinet, month;
 
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN cabinet 'Идентификатор личного кабинета WB (строка), связывается с project_cabinets.cabinet/brand_cabinets.cabinet при platform=''wb''. Один кабинет может быть привязан к нескольким проектам/брендам.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN month 'Начало месяца продажи (по sale_date из wb_reports), время 12:00 — намеренно не 00:00, чтобы Report Timezone в Metabase не сдвигал 1-е число на конец предыдущего месяца.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN sales_qty 'Количество проданных единиц минус возвраты (qty), по payment_reason=продажа/возврат.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN sales_amount 'Продажи в деньгах (wb_realized_amount), продажа минус возврат, только валидные payment_reason из cs_k_types.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN spp_amount 'СПП (скидка постоянного покупателя) = розничная цена с учётом СПП минус фактические продажи.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wb_commission 'Комиссия Wildberries = розничная цена с СПП минус сумма к перечислению продавцу.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_for_goods 'К перечислению за товар (payable_to_seller), продажа минус возврат.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN logistics_direct 'Логистика "к клиенту" (прямая), определяется по тексту logistics_fines_corrections_type LIKE ''%К клиенту%'', НЕ по qty — на реальных данных qty-подход давал искажение ~300k₽.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN logistics_reverse 'Логистика обратная (не "к клиенту" или тип не указан).';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN logistics_warehouse_compensation 'Компенсация логистики/склада (transport_warehouse_compensation) — пока НЕ включена в logistics_* и в payable_total, ждёт отдельной сверки.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN fines 'Штрафы WB (total_fines), знак инвертирован (расход).';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN commission_correction 'Доплаты — из wb_commission_correction ("Корректировка Вознаграждения Вайлдберриз"), НЕ из колонки "Доплаты" — такой колонки в реальных выгрузках WB нет.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN storage_cost 'Хранение (storage_cost), знак инвертирован (расход).';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN acceptance_cost 'Платная приёмка — из acceptance_operations ("Операции на приемке"), НЕ из колонки "Платная приемка" — такой колонки нет в реальных выгрузках.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN deductions 'Удержание (deductions) за вычетом строк, относящихся к продвижению (см. promotion_cost) — иначе продвижение считалось бы дважды.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wibes_discount 'Скидка Wibes = loyalty_discount_compensation (продажа минус возврат) минус loyalty_program_cost минус loyalty_points_deducted — оба минус считаются как "всего минус 2×возврат" (сумма по document_type=Продажа/NULL минус сумма по Возврат), см. правку 2026-09-13 в заголовке файла. НЕ из wibes_discount_pct — эта колонка на 100% пустая в реальных выгрузках.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN promotion_cost '"Продвижение WB"/"Продвижение ВБ" объединены в одну метрику — одна и та же статья до/после ребрендинга WB.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. НЕ включает logistics_warehouse_compensation (см. её комментарий).';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN sales_qty 'Количество проданных единиц минус возвраты (qty), по payment_reason=продажа/возврат. Формула — в wb_metrics_by_sku_month, здесь просто сумма по всем артикулам.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN sales_amount 'Продажи в деньгах (wb_realized_amount), продажа минус возврат, только валидные payment_reason из cs_k_types. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN spp_amount 'СПП (скидка постоянного покупателя) = розничная цена с учётом СПП минус фактические продажи. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wb_commission 'Комиссия Wildberries = розничная цена с СПП минус сумма к перечислению продавцу. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_for_goods 'К перечислению за товар (payable_to_seller), продажа минус возврат. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN logistics_direct 'Логистика "к клиенту" (прямая). Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN logistics_reverse 'Логистика обратная (не "к клиенту" или тип не указан). Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN fines 'Штрафы WB (total_fines), знак инвертирован (расход). Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN commission_correction 'Доплаты — из wb_commission_correction ("Корректировка Вознаграждения Вайлдберриз"). Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN storage_cost 'Хранение (storage_cost), знак инвертирован (расход). Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN acceptance_cost 'Платная приёмка — из acceptance_operations ("Операции на приемке"). Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN deductions 'Удержание (deductions) за вычетом строк, относящихся к продвижению. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wibes_discount 'Скидка Wibes = компенсация минус расходы программы лояльности. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN promotion_cost '"Продвижение WB"/"Продвижение ВБ" объединены в одну метрику. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. Формула — в wb_metrics_by_sku_month.';
