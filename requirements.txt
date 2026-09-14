@@ -6,3 +6,5 @@ python-dotenv
 flask
 flask-login
 requests
+google-api-python-client
+google-auth

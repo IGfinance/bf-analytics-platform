@@ -23,30 +23,32 @@ import app as webapp  # noqa: E402
 
 
 def test_supported_sources_only_implemented():
-    assert webapp.SUPPORTED_SOURCES == {"bank_1c", "card_pdf"}
+    assert webapp.SUPPORTED_SOURCES == {"bank_1c", "card_pdf", "klientiks"}
 
 
 def test_build_source_cards_active_and_disabled(monkeypatch):
     monkeypatch.setattr(
         webapp, "get_project_sources",
-        lambda pid, db: ["bank_1c", "card_pdf", "klientiks"],
+        lambda pid, db: ["bank_1c", "card_pdf", "klientiks", "gsheets_payroll"],
     )
     with webapp.app.test_request_context():
         cards = webapp.build_source_cards(1, "myproj")
 
     by_key = {c["key"]: c for c in cards}
 
-    # банк/карты — активные, с action и правильным accept
+    # банк/карты/клиентикс — активные, с action и правильным accept
     assert by_key["bank_1c"]["supported"] is True
     assert by_key["bank_1c"]["accept"] == ".txt"
     assert by_key["bank_1c"]["action"] and "/upload/bank" in by_key["bank_1c"]["action"]
     assert by_key["card_pdf"]["accept"] == ".pdf"
     assert "/upload/card" in by_key["card_pdf"]["action"]
+    assert by_key["klientiks"]["supported"] is True
+    assert by_key["klientiks"]["accept"] == ".csv"
+    assert "/upload/klientiks" in by_key["klientiks"]["action"]
 
-    # Клиентикс включён у проекта, но код не умеет → disabled-заглушка
-    assert by_key["klientiks"]["supported"] is False
-    assert by_key["klientiks"]["action"] is None
-    assert by_key["klientiks"]["label"] == "Выгрузка Клиентикс"
+    # Google-Таблицы включены у проекта, но код ещё не умеет → disabled-заглушка
+    assert by_key["gsheets_payroll"]["supported"] is False
+    assert by_key["gsheets_payroll"]["action"] is None
 
 
 def test_no_sources_gives_empty(monkeypatch):

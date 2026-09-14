@@ -11,6 +11,11 @@
     <p class="mt-4 text-sm text-success-text">
       Загружено файлов: {{ summary.files }}, строк: {{ summary.rows }}
     </p>
+    {% if summary.skipped %}
+      <p class="mt-2 text-sm text-warning">
+        Пропущено нечитаемых строк (неполная структура): {{ summary.skipped }}
+      </p>
+    {% endif %}
     {% if summary.cardholders %}
       <div class="mt-4 bg-surface border border-border rounded-lg p-4 max-w-xl">
         <p class="text-sm font-medium">Держатели карт:</p>

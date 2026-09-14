@@ -47,6 +47,7 @@ from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
 from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
 from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
+from klientiks_core import ingest_files as ingest_klientiks  # noqa: E402
 from reconcile_wb import run_reconciliation            # noqa: E402
 from auth import authenticate, login_manager            # noqa: E402
 from ch_control import get_control_client              # noqa: E402
@@ -250,7 +251,7 @@ def build_top_nav() -> list[dict]:
         items.append({
             "label": "Загрузка", "icon": "upload",
             "href": url_for("upload_page", slug=slug),
-            "active": endpoint in ("upload_page", "upload_detail", "upload_summary", "upload_bank", "upload_card"),
+            "active": endpoint in ("upload_page", "upload_detail", "upload_summary", "upload_bank", "upload_card", "upload_klientiks"),
         })
     else:
         items.append({"label": "Дашборд", "icon": "layout-dashboard", "href": None, "active": False})
@@ -353,7 +354,9 @@ SOURCE_META = {
     "card_pdf": {"label": "Карточная выписка PDF", "accept": ".pdf",
                  "endpoint": "upload_card", "description":
                  "PDF-справки о движении средств по картам — данные сохранятся в card_statements."},
-    "klientiks": {"label": "Выгрузка Клиентикс"},
+    "klientiks": {"label": "Выгрузка Клиентикс", "accept": ".csv",
+                  "endpoint": "upload_klientiks", "description":
+                  "CSV-выгрузка визитов из Клиентикс — данные сохранятся в klientiks_operations."},
     "gsheets_payroll": {"label": "Google-Таблица «Зарплаты»"},
     "gsheets_expenses": {"label": "Google-Таблица «Расходы по статьям»"},
 }
@@ -577,6 +580,13 @@ def upload_bank(slug):
 @project_access_required
 def upload_card(slug):
     return handle_source_upload(slug, ".pdf", ingest_card, "Карточная выписка PDF")
+
+
+@app.route("/p/<slug>/upload/klientiks", methods=["POST"])
+@login_required
+@project_access_required
+def upload_klientiks(slug):
+    return handle_source_upload(slug, ".csv", ingest_klientiks, "Выгрузка Клиентикс")
 
 
 # ---------------------------------------------------------------------------
