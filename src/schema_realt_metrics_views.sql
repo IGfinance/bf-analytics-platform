@@ -137,8 +137,8 @@ CREATE VIEW IF NOT EXISTS realt_expenses_by_month AS
 SELECT
     toDateTime(toStartOfMonth(period)) + INTERVAL 12 HOUR AS month,
     coalesce(expense_type, 'Прочее')                      AS expense_type,
-    sum(amount)                                           AS amount,
-    sumIf(amount, is_shaa = 0)                            AS amount_ex_shaa,
+    sum(realt_expenses.amount)                            AS amount,
+    sumIf(realt_expenses.amount, is_shaa = 0)             AS amount_ex_shaa,
     count()                                               AS articles
 FROM realt_expenses
 WHERE period IS NOT NULL
