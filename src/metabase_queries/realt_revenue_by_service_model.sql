@@ -1,5 +1,6 @@
--- Metabase: "Модель - Реальт выручка по услугам" (коллекция Реальта на
--- dashboards.finance-black.ru — сверяйтесь по имени, а не по id).
+-- Metabase: "Модель - Реальт выручка по услугам" (id 99 в проде на 2026-09-15,
+-- коллекция "Реальт" id 8, data source "ClickHouse Realt" id 3 → БД realt).
+-- Сверяйтесь по имени, а не по id.
 --
 -- Тонкая обёртка над ClickHouse VIEW realt_revenue_by_service (см.
 -- ../schema_realt_metrics_views.sql). Формулы — только в VIEW, здесь русские
