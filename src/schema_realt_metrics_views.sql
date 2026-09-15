@@ -126,3 +126,27 @@ ALTER TABLE realt_revenue_by_service COMMENT COLUMN service 'Название у
 ALTER TABLE realt_revenue_by_service COMMENT COLUMN revenue 'Выручка по услуге за месяц = SUM(amount). Фильтры те же, что в realt_metrics_by_month.';
 ALTER TABLE realt_revenue_by_service COMMENT COLUMN visits 'Количество визитов по услуге за месяц.';
 ALTER TABLE realt_revenue_by_service COMMENT COLUMN avg_check 'Средний чек по услуге = выручка / визиты.';
+
+
+-- realt_expenses_by_month — «Остальные расходы» по типу статьи помесячно (из
+-- realt_expenses, вкладка «Остальные расходы»). Строка = (месяц, expense_type).
+-- Набор конкретных статей 2025≠2026, поэтому группируем по типу. Суммы
+-- отрицательные (расход). ШАА (Шмилович): даём и полную сумму, и без ШАА —
+-- чтобы дашборд мог показывать «с/без Шмиловича» единообразно с выручкой.
+CREATE VIEW IF NOT EXISTS realt_expenses_by_month AS
+SELECT
+    toDateTime(toStartOfMonth(period)) + INTERVAL 12 HOUR AS month,
+    coalesce(expense_type, 'Прочее')                      AS expense_type,
+    sum(amount)                                           AS amount,
+    sumIf(amount, is_shaa = 0)                            AS amount_ex_shaa,
+    count()                                               AS articles
+FROM realt_expenses
+WHERE period IS NOT NULL
+GROUP BY month, expense_type
+ORDER BY month, expense_type;
+
+ALTER TABLE realt_expenses_by_month COMMENT COLUMN month 'Начало месяца расхода, время 12:00 (см. realt_metrics_by_month.month — против сдвига Report Timezone в Metabase).';
+ALTER TABLE realt_expenses_by_month COMMENT COLUMN expense_type 'Группа/тип статьи (строка «Дата/Тип» вкладки): Аренда+коммуналка/Налоги ФОТ/Санпэдрежим/… NULL→«Прочее».';
+ALTER TABLE realt_expenses_by_month COMMENT COLUMN amount 'Сумма расходов типа за месяц = SUM(amount), обычно отрицательная. Включает ШАА (Шмилович).';
+ALTER TABLE realt_expenses_by_month COMMENT COLUMN amount_ex_shaa 'То же без статей Шмиловича (is_shaa=0) — для среза «без Шмиловича», согласованного с выручкой.';
+ALTER TABLE realt_expenses_by_month COMMENT COLUMN articles 'Сколько статей-столбцов этого типа попало в месяц (диагностика).';

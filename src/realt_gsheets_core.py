@@ -10,13 +10,15 @@ API (сервис-аккаунт), не через ручную выгрузку
 database аргументами, log-колбэк, исключения вместо sys.exit, summary-dict),
 но источник — API, а не список файлов.
 
-ingest_expenses (расходы по статьям) — отдельная будущая задача, пока заглушка.
+realt_expenses — вкладка «Остальные расходы»: матрица (колонка = статья с двумя
+шапками «Статья»/«Дата/Тип», строка = месяц). parse_expenses разворачивает её в
+длинные записи (месяц × статья) с типом-группой и флагом is_shaa (Шмилович).
 """
 
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import clickhouse_connect
@@ -26,6 +28,21 @@ SCRIPT_DIR = Path(__file__).parent
 SHEETS_SCOPE = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 PAYROLL_SHEET_NAME = "Импорт ФОТ"
 PAYROLL_SOURCE = "gsheet:Импорт ФОТ"
+
+EXPENSES_SHEET_NAME = "Остальные расходы"
+EXPENSES_SOURCE = "gsheet:Остальные расходы"
+EXPENSES_COLUMNS = [
+    "project_id", "period", "article", "expense_type", "amount", "is_shaa",
+    "row_num", "col_num", "source_file",
+]
+
+# Рус. сокращения месяцев вкладки «Остальные расходы» (по первым 3 буквам,
+# после снятия точки). Формы нерегулярны: «мая-25» без точки, «февр.-25» и т.п.
+# «мар»→март(3) и «мая»/«май»→май(5) различаются по 3-буквенному префиксу.
+_RU_MON = {
+    "янв": 1, "фев": 2, "мар": 3, "апр": 4, "мая": 5, "май": 5, "июн": 6,
+    "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
+}
 
 COLUMNS = [
     "project_id", "period", "employee_id", "department", "role", "category",
@@ -138,6 +155,69 @@ def parse_payroll(values: list[list[str]]) -> tuple[list[dict], int]:
     return rows, skipped
 
 
+def _ru_month(label: str):
+    """'янв.-25' / 'мая-25' / 'сент.-26' → date(год, месяц, 1). Иначе None.
+
+    Метка = <сокр.месяца>[.]-<yy>. Не-месяцы ('Статья', 'Итого', '') → None.
+    """
+    label = (label or "").strip()
+    if "-" not in label:
+        return None
+    mon, yy = label.rsplit("-", 1)
+    mon = mon.strip().rstrip(".").lower()
+    yy = yy.strip()
+    m = _RU_MON.get(mon[:3])
+    if m is None or not yy.isdigit():
+        return None
+    year = 2000 + int(yy) if len(yy) == 2 else int(yy)
+    return date(year, m, 1)
+
+
+def parse_expenses(values: list[list[str]]) -> tuple[list[dict], int]:
+    """Вкладка-матрица «Остальные расходы» → длинные записи (месяц × статья).
+
+    Возвращает (строки, пропущено). Пропущено — число ячеек-статей со значением
+    «-»/пусто в строках-месяцах. Блоки распознаются по строке «Статья» (имена
+    статей по колонкам ≥2) и следующей строке «Дата/Тип» (группа/тип). Далее
+    идут строки-месяцы (метка в колонке [1]). is_shaa=True, если в имени статьи
+    есть «ШАА» (расходы Шмиловича). row_num — 1-based позиция строки во вкладке,
+    col_num — индекс колонки статьи; вместе стабильны для дедупа при перезаливке.
+    """
+    rows, skipped = [], 0
+    names, types = None, None
+    for row_num, raw in enumerate(values, start=1):
+        c1 = _cell(raw, 1)
+        if c1 == "Статья":
+            names, types = raw, None
+            continue
+        if c1 == "Дата/Тип":
+            types = raw
+            continue
+        month = _ru_month(c1)
+        if month is None or names is None:
+            continue
+        for col in range(2, len(names)):
+            article = _cell(names, col)
+            if not article:
+                continue
+            amount = _num(_cell(raw, col))
+            if amount is None:
+                skipped += 1
+                continue
+            etype = _cell(types, col) if types else ""
+            rows.append({
+                "period": month,
+                "article": article,
+                "expense_type": etype or None,
+                "amount": amount,
+                "is_shaa": "ШАА" in article,
+                "row_num": row_num,
+                "col_num": col,
+                "source_file": EXPENSES_SOURCE,
+            })
+    return rows, skipped
+
+
 def get_client(database: str | None = None):
     host = os.environ["CLICKHOUSE_HOST"]
     port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
@@ -181,6 +261,32 @@ def ingest_payroll(project_id: int, log=print, database: str | None = None,
     return {"rows": len(data), "skipped": skipped}
 
 
-def ingest_expenses(paths: list[Path], project_id: int, log=print, database: str | None = None) -> dict:
-    """Расходы по статьям — отдельная будущая задача, формат ещё не согласован."""
-    raise NotImplementedError
+def ingest_expenses(project_id: int, log=print, database: str | None = None,
+                    spreadsheet_id: str | None = None, sheet_name: str = EXPENSES_SHEET_NAME) -> dict:
+    """Тянет вкладку «Остальные расходы» через Google Sheets API и пишет в realt_expenses.
+
+    Контракт как у ingest_payroll (project_id/database аргументами, log-колбэк,
+    ValueError вместо sys.exit, summary-dict), источник — API. spreadsheet_id по
+    умолчанию из GSHEETS_SPREADSHEET_ID.
+    """
+    if spreadsheet_id is None:
+        spreadsheet_id = os.environ["GSHEETS_SPREADSHEET_ID"]
+
+    log(f"  Читаю вкладку «{sheet_name}» из Google Sheets…")
+    values = read_tab(spreadsheet_id, sheet_name)
+    rows, skipped = parse_expenses(values)
+    if skipped:
+        log(f"    Пропущено ячеек-статей без суммы («-»/пусто): {skipped}")
+    if not rows:
+        raise ValueError("Не найдено ни одной строки расходов во вкладке")
+
+    for row in rows:
+        row["project_id"] = project_id
+        row["is_shaa"] = int(row["is_shaa"])  # bool → UInt8
+
+    client = get_client(database=database)
+    data = [[row.get(col) for col in EXPENSES_COLUMNS] for row in rows]
+    client.insert("realt_expenses", data, column_names=EXPENSES_COLUMNS)
+    log(f"Загружено {len(data)} строк в realt_expenses.")
+
+    return {"rows": len(data), "skipped": skipped}

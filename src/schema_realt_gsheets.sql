@@ -34,16 +34,24 @@ ENGINE = ReplacingMergeTree(loaded_at)
 PARTITION BY toYYYYMM(coalesce(period, toDate('1970-01-01')))
 ORDER BY (project_id, source_file, row_num);
 
+-- realt_expenses — вкладка «Остальные расходы» (матрица: столбец = статья с
+-- двумя шапками «Статья»/«Дата/Тип», строка = месяц). parse_expenses в
+-- realt_gsheets_core.py разворачивает её в длинные записи (месяц × статья).
+-- Суммы отрицательные (расход), рус. формат нормализуется в Float64. Набор
+-- статей 2025 ≠ 2026 — в семантическом слое группируем по expense_type.
 CREATE TABLE IF NOT EXISTS realt_expenses
 (
     project_id     UInt32,
-    expense_date   Nullable(Date),
-    -- TODO(Илья): статья расхода/сумма/контрагент и т.д.
-    extra_columns  Map(String, String),
-    row_num        UInt32,           -- позиция строки в исходном файле, для дедупа при перезаливке
+    period         Nullable(Date)      COMMENT 'Месяц расхода (1-е число, из метки вкладки «янв.-25»)',
+    article        String              COMMENT 'Статья расхода — имя столбца (напр. «Аренда - 2 этаж»)',
+    expense_type   Nullable(String)    COMMENT 'Группа/тип статьи (строка «Дата/Тип»): Аренда+коммуналка/Налоги ФОТ/Санпэдрежим/…',
+    amount         Nullable(Float64)   COMMENT 'Сумма за месяц, обычно отрицательная (расход)',
+    is_shaa        UInt8               COMMENT 'Статья Шмиловича (ШАА): 1/0, для тумблера «с/без Шмиловича»',
+    row_num        UInt32              COMMENT 'Позиция строки-месяца во вкладке',
+    col_num        UInt32              COMMENT 'Индекс столбца-статьи; (row_num,col_num) — ключ дедупа ячейки',
     source_file    String,
     loaded_at      DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(loaded_at)
-PARTITION BY toYYYYMM(coalesce(expense_date, toDate('1970-01-01')))
-ORDER BY (project_id, source_file, row_num);
+PARTITION BY toYYYYMM(coalesce(period, toDate('1970-01-01')))
+ORDER BY (project_id, source_file, row_num, col_num);
