@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS klientiks_operations
     completed_count        Nullable(UInt32)    COMMENT 'Количество завершённых визитов клиента (кумулятивно)',
     psychologist_category  Nullable(String)    COMMENT 'Категория психолога',
     psychiatrist_category  Nullable(String)    COMMENT 'Категория психиатра',
-    birth_date             Nullable(Date)      COMMENT 'Дата рождения клиента — для метрик по возрасту',
+    birth_date             Nullable(Date32)    COMMENT 'Дата рождения клиента — для метрик по возрасту (Date32: даты до 1970 г.)',
     gender                 Nullable(String)    COMMENT 'Пол клиента (male/female)',
     extra_columns          Map(String, String) COMMENT 'Нераспознанные/лишние поля выгрузки',
     row_num                UInt32              COMMENT 'Позиция строки в исходном файле, для дедупа при перезаливке',

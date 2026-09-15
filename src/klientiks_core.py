@@ -59,9 +59,13 @@ def _parse_birth(value: str):
     if not _BIRTH_RE.match(value):
         return None
     try:
-        return datetime.strptime(value, "%d.%m.%Y").date()
+        d = datetime.strptime(value, "%d.%m.%Y").date()
     except ValueError:
         return None
+    # ClickHouse Date32 начинается с 1900-01-01; отсекаем заведомо мусорные даты
+    if d.year < 1900 or d.year > datetime.now().year:
+        return None
+    return d
 
 
 def _parse_float(value: str):
