@@ -48,6 +48,7 @@ from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
 from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
 from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
 from klientiks_core import ingest_files as ingest_klientiks  # noqa: E402
+from realt_gsheets_core import ingest_payroll, ingest_expenses  # noqa: E402
 from reconcile_wb import run_reconciliation            # noqa: E402
 from auth import authenticate, login_manager            # noqa: E402
 from ch_control import get_control_client              # noqa: E402
@@ -357,8 +358,12 @@ SOURCE_META = {
     "klientiks": {"label": "Выгрузка Клиентикс", "accept": ".csv",
                   "endpoint": "upload_klientiks", "description":
                   "CSV-выгрузка визитов из Клиентикс — данные сохранятся в klientiks_operations."},
-    "gsheets_payroll": {"label": "Google-Таблица «Зарплаты»"},
-    "gsheets_expenses": {"label": "Google-Таблица «Расходы по статьям»"},
+    "gsheets_payroll": {"label": "Google-Таблица «Зарплаты»", "pull": True,
+                        "endpoint": "upload_gsheets_payroll", "description":
+                        "ФОТ (вкладка «Импорт ФОТ») — тянется напрямую через Google Sheets API в realt_payroll. Файл не нужен."},
+    "gsheets_expenses": {"label": "Google-Таблица «Расходы по статьям»", "pull": True,
+                         "endpoint": "upload_gsheets_expenses", "description":
+                         "«Остальные расходы» — тянутся напрямую через Google Sheets API в realt_expenses. Файл не нужен."},
 }
 SUPPORTED_SOURCES = {key for key, meta in SOURCE_META.items() if "endpoint" in meta}
 
@@ -378,6 +383,7 @@ def build_source_cards(project_id: int, slug: str) -> list[dict]:
             "label": meta.get("label", src),
             "description": meta.get("description", ""),
             "accept": meta.get("accept"),
+            "pull": meta.get("pull", False),
             "supported": supported,
             "action": url_for(meta["endpoint"], slug=slug) if supported else None,
         })
@@ -587,6 +593,42 @@ def upload_card(slug):
 @project_access_required
 def upload_klientiks(slug):
     return handle_source_upload(slug, ".csv", ingest_klientiks, "Выгрузка Клиентикс")
+
+
+def handle_gsheets_pull(slug: str, ingest_fn, source_label: str):
+    """Триггер загрузки Google-Таблицы (ФОТ/расходы): без файла, тянет через API.
+
+    ingest_fn(project_id, log, database) — ingest_payroll/ingest_expenses.
+    Ошибки (нет доступа к таблице/сбой ClickHouse) не роняют форму: source_result
+    с 500. Ключ сервис-аккаунта и ID таблицы берутся из окружения на сервере.
+    """
+    logs = []
+    try:
+        summary = ingest_fn(project_id=g.project["id"], log=logs.append, database=g.project["slug"])
+    except Exception as e:
+        return render_template(
+            "source_result.html", error=str(e), summary=None, logs=logs,
+            slug=slug, source_label=source_label,
+        ), 500
+
+    return render_template(
+        "source_result.html", error=None, summary=summary, logs=logs,
+        slug=slug, source_label=source_label,
+    )
+
+
+@app.route("/p/<slug>/upload/gsheets-payroll", methods=["POST"])
+@login_required
+@project_access_required
+def upload_gsheets_payroll(slug):
+    return handle_gsheets_pull(slug, ingest_payroll, "Google-Таблица «Зарплаты»")
+
+
+@app.route("/p/<slug>/upload/gsheets-expenses", methods=["POST"])
+@login_required
+@project_access_required
+def upload_gsheets_expenses(slug):
+    return handle_gsheets_pull(slug, ingest_expenses, "Google-Таблица «Расходы по статьям»")
 
 
 # ---------------------------------------------------------------------------

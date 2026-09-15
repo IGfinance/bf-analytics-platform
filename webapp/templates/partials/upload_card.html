@@ -4,16 +4,20 @@
    .xlsx). card_needs_cabinet (default true) — включать hidden-зеркало кабинета
    (WB); для источников без кабинета (банк/карты) передавать false. Кабинет —
    общее поле снаружи (partials/cabinet_field.html), сюда попадает через
-   hidden-зеркало, синхронизируемое shell.js (data-cabinet-shared/data-cabinet-mirror). #}
+   hidden-зеркало, синхронизируемое shell.js (data-cabinet-shared/data-cabinet-mirror).
+   card_pull (default false) — источник-триггер (Google-Таблица): без файла,
+   одна кнопка «Загрузить из Google-Таблицы», тянет данные через API на сервере. #}
 {% set card_accept = card_accept|default(".xlsx") %}
 {% set card_needs_cabinet = card_needs_cabinet|default(true) %}
+{% set card_pull = card_pull|default(false) %}
 <div class="bg-surface border border-border rounded-2xl p-6">
   <h2 class="text-lg font-bold font-montserrat">{{ card_title }}</h2>
   <p class="text-sm text-secondary mt-1 min-h-[2.5rem]">{{ card_description }}</p>
 
   <form action="{{ card_action }}" method="post" enctype="multipart/form-data" class="mt-4">
-    {% if card_needs_cabinet %}<input type="hidden" name="cabinet" data-cabinet-mirror>{% endif %}
+    {% if card_needs_cabinet and not card_pull %}<input type="hidden" name="cabinet" data-cabinet-mirror>{% endif %}
 
+    {% if not card_pull %}
     <div>
       <label for="{{ card_input_id }}" class="text-sm font-semibold">Файлы ({{ card_accept }})</label>
       <input type="file" id="{{ card_input_id }}" name="{{ card_input_name }}" accept="{{ card_accept }}"
@@ -23,10 +27,11 @@
                     file:bg-accent file:text-white file:font-medium file:cursor-pointer
                     hover:file:bg-accent-hover">
     </div>
+    {% endif %}
 
     <button type="submit"
             class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium transition-colors duration-150">
-      Загрузить
+      {% if card_pull %}Загрузить из Google-Таблицы{% else %}Загрузить{% endif %}
     </button>
   </form>
 </div>

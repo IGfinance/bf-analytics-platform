@@ -9,7 +9,8 @@
     <p class="mt-4 text-sm text-danger">Ошибка: {{ error }}</p>
   {% else %}
     <p class="mt-4 text-sm text-success-text">
-      Загружено файлов: {{ summary.files }}, строк: {{ summary.rows }}
+      {% if summary.files is defined %}Загружено файлов: {{ summary.files }}, строк: {{ summary.rows }}
+      {% else %}Загружено строк: {{ summary.rows }}{% endif %}
     </p>
     {% if summary.skipped %}
       <p class="mt-2 text-sm text-warning">
