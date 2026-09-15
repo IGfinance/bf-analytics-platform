@@ -6,8 +6,9 @@
   GET  /                    — список доступных проектов
   GET  /p/<slug>/           — дашборд проекта (кабинеты + текущее состояние сверки)
   GET  /p/<slug>/upload     — форма загрузки отчётов
-  POST /p/<slug>/upload/detail  — обработка детального отчёта
-  POST /p/<slug>/upload/summary — обработка сводного отчёта + сверка
+  POST /p/<slug>/upload/detail  — обработка детального отчёта WB
+  POST /p/<slug>/upload/summary — обработка сводного отчёта WB + сверка
+  POST /p/<slug>/upload/ozon    — отчёт Ozon «Начисления» (xlsx)
   POST /p/<slug>/upload/bank    — банковская выписка 1С (txt)
   POST /p/<slug>/upload/card    — карточная выписка (PDF)
   GET  /profile             — профиль пользователя
@@ -45,6 +46,7 @@ load_dotenv(WEBAPP_DIR / ".env")       # секреты веб-формы (мо�
 
 from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
+from ozon_core import ingest_files as ingest_ozon      # noqa: E402
 from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
 from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
 from klientiks_core import ingest_files as ingest_klientiks  # noqa: E402
@@ -252,7 +254,7 @@ def build_top_nav() -> list[dict]:
         items.append({
             "label": "Загрузка", "icon": "upload",
             "href": url_for("upload_page", slug=slug),
-            "active": endpoint in ("upload_page", "upload_detail", "upload_summary", "upload_bank", "upload_card", "upload_klientiks"),
+            "active": endpoint in ("upload_page", "upload_detail", "upload_summary", "upload_ozon", "upload_bank", "upload_card", "upload_klientiks"),
         })
     else:
         items.append({"label": "Дашборд", "icon": "layout-dashboard", "href": None, "active": False})
@@ -339,10 +341,19 @@ def project_dashboard(slug):
 # Routes — загрузка отчётов
 # ---------------------------------------------------------------------------
 
+# Все известные платформе площадки (каталог для UI) — независимо от того,
+# есть ли у конкретного проекта кабинеты на этой площадке. Площадка без
+# адаптера рендерится на /p/<slug>/upload как серая заглушка ВСЕГДА, а не
+# только когда у проекта уже случайно есть такие кабинеты — так на странице
+# загрузки одинаковый набор карточек у всех проектов.
+ALL_PLATFORMS = {
+    "wb": "Wildberries",
+    "ozon": "Ozon",
+}
+
 # Площадки, для которых уже есть ingest-адаптер и формы загрузки. Остальные
-# площадки, встреченные среди кабинетов проекта (project_cabinets.platform),
-# рендерятся как disabled-заглушка на /p/<slug>/upload.
-SUPPORTED_PLATFORMS = {"wb"}
+# из ALL_PLATFORMS рендерятся как disabled-заглушка на /p/<slug>/upload.
+SUPPORTED_PLATFORMS = {"wb", "ozon"}
 
 # Источники (project_sources), которые код умеет парсить и грузить. Источник,
 # включённый у проекта, но не отсюда, рендерится как disabled-заглушка
@@ -368,24 +379,46 @@ SOURCE_META = {
 SUPPORTED_SOURCES = {key for key, meta in SOURCE_META.items() if "endpoint" in meta}
 
 
-def build_source_cards(project_id: int, slug: str) -> list[dict]:
-    """Карточки источников для страницы загрузки — по включённым в project_sources.
+def build_platform_cards() -> list[dict]:
+    """Заглушки площадок без адаптера — всегда полный список ALL_PLATFORMS
+    минус SUPPORTED_PLATFORMS, одинаковый для всех проектов (см. ALL_PLATFORMS)."""
+    return [
+        {"key": key, "label": label}
+        for key, label in ALL_PLATFORMS.items()
+        if key not in SUPPORTED_PLATFORMS
+    ]
 
-    Источник в SUPPORTED_SOURCES → активная форма (action/accept/multiple);
-    остальные (включены у проекта, но код ещё не умеет) → disabled-заглушка.
+
+def build_source_cards(project_id: int, slug: str) -> list[dict]:
+    """Карточки источников для страницы загрузки — ВСЕГДА по полному каталогу
+    SOURCE_META (плюс код источника из project_sources, если он самому
+    SOURCE_META ещё неизвестен — на случай, что данные уже включили,
+    а код под них подвести не успели), а не только по включённым в
+    project_sources: у клиента без какого-то источника карточка всё равно
+    рендерится, только неактивной (серой) — единообразная страница у всех
+    проектов.
+
+    enabled — источник включён у ЭТОГО проекта (project_sources).
+    supported — у источника есть код-адаптер (SUPPORTED_SOURCES).
+    action не None (⇒ активная форма) только когда оба условия верны.
     """
+    enabled_sources = set(get_project_sources(project_id, slug))
+    keys = list(SOURCE_META.keys()) + [k for k in enabled_sources if k not in SOURCE_META]
+
     cards = []
-    for src in get_project_sources(project_id, slug):
-        meta = SOURCE_META.get(src, {})
-        supported = src in SUPPORTED_SOURCES
+    for key in keys:
+        meta = SOURCE_META.get(key, {})
+        is_enabled = key in enabled_sources
+        is_supported = key in SUPPORTED_SOURCES
         cards.append({
-            "key": src,
-            "label": meta.get("label", src),
+            "key": key,
+            "label": meta.get("label", key),
             "description": meta.get("description", ""),
             "accept": meta.get("accept"),
             "pull": meta.get("pull", False),
-            "supported": supported,
-            "action": url_for(meta["endpoint"], slug=slug) if supported else None,
+            "enabled": is_enabled,
+            "supported": is_supported,
+            "action": url_for(meta["endpoint"], slug=slug) if (is_enabled and is_supported) else None,
         })
     return cards
 
@@ -395,9 +428,12 @@ def upload_form_context(project_id: int, slug: str, error: str | None = None) ->
     return {
         "error": error,
         "slug": slug,
-        "cabinets": get_project_cabinets(project_id, slug, platform="wb"),
+        # Кабинет — общее поле для всех площадок с кабинетами (WB и Ozon),
+        # поэтому без фильтра по platform: даталист собирает кабинеты обеих.
+        "cabinets": get_project_cabinets(project_id, slug),
         "has_wb": "wb" in platforms,
-        "other_platforms": [p for p in platforms if p not in SUPPORTED_PLATFORMS],
+        "has_ozon": "ozon" in platforms,
+        "other_platforms": build_platform_cards(),
         "sources": build_source_cards(project_id, slug),
     }
 
@@ -517,6 +553,58 @@ def upload_summary(slug):
         failures=failures,
         logs=logs,
         slug=slug,
+    )
+
+
+@app.route("/p/<slug>/upload/ozon", methods=["POST"])
+@login_required
+@project_access_required
+def upload_ozon(slug):
+    cabinet = request.form.get("cabinet", "").strip()
+    files = request.files.getlist("files")
+
+    if not cabinet:
+        return render_template(
+            "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
+        ), 400
+    if not files or all(f.filename == "" for f in files):
+        return render_template(
+            "upload_form.html",
+            **upload_form_context(g.project["id"], slug, "Выберите хотя бы один файл"),
+        ), 400
+
+    saved_paths, skipped = [], []
+    for f in files:
+        filename = safe_filename(f.filename)
+        if not filename.lower().endswith(".xlsx"):
+            skipped.append(f.filename)
+            continue
+        dest = UPLOAD_DIR / filename
+        f.save(dest)
+        saved_paths.append(dest)
+
+    if not saved_paths:
+        return render_template(
+            "upload_form.html",
+            **upload_form_context(g.project["id"], slug, "Ни одного .xlsx файла не найдено"),
+        ), 400
+
+    logs = []
+    if skipped:
+        logs.append(f"Пропущены не-xlsx файлы: {', '.join(skipped)}")
+
+    try:
+        summary = ingest_ozon(saved_paths, cabinet, log=logs.append, database=g.project["slug"])
+    except Exception as e:
+        return render_template(
+            "detail_result.html", error=str(e), summary=None, logs=logs, slug=slug,
+        ), 500
+    finally:
+        for p in saved_paths:
+            p.unlink(missing_ok=True)
+
+    return render_template(
+        "detail_result.html", error=None, summary=summary, logs=logs, slug=slug,
     )
 
 

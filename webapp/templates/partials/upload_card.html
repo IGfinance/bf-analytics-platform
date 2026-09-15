@@ -6,32 +6,42 @@
    общее поле снаружи (partials/cabinet_field.html), сюда попадает через
    hidden-зеркало, синхронизируемое shell.js (data-cabinet-shared/data-cabinet-mirror).
    card_pull (default false) — источник-триггер (Google-Таблица): без файла,
-   одна кнопка «Загрузить из Google-Таблицы», тянет данные через API на сервере. #}
+   одна кнопка «Загрузить из Google-Таблицы», тянет данные через API на сервере.
+   card_disabled (default false) — у проекта нет этого источника/кабинетов/
+   площадки: форма (файл + кнопка) не рендерится вообще, вместо неё —
+   card_disabled_reason. Единая карточка используется и для активных, и для
+   недоступных источников/площадок — одинаковый вид у всех, ничего не
+   пропадает выборочно. #}
 {% set card_accept = card_accept|default(".xlsx") %}
 {% set card_needs_cabinet = card_needs_cabinet|default(true) %}
 {% set card_pull = card_pull|default(false) %}
-<div class="bg-surface border border-border rounded-2xl p-6">
+{% set card_disabled = card_disabled|default(false) %}
+<div class="bg-surface border border-border rounded-2xl p-6 {% if card_disabled %}opacity-50{% endif %}">
   <h2 class="text-lg font-bold font-montserrat">{{ card_title }}</h2>
   <p class="text-sm text-secondary mt-1 min-h-[2.5rem]">{{ card_description }}</p>
 
-  <form action="{{ card_action }}" method="post" enctype="multipart/form-data" class="mt-4">
-    {% if card_needs_cabinet and not card_pull %}<input type="hidden" name="cabinet" data-cabinet-mirror>{% endif %}
+  {% if card_disabled %}
+    <p class="text-xs text-secondary mt-1">{{ card_disabled_reason }}</p>
+  {% else %}
+    <form action="{{ card_action }}" method="post" enctype="multipart/form-data" class="mt-4">
+      {% if card_needs_cabinet and not card_pull %}<input type="hidden" name="cabinet" data-cabinet-mirror>{% endif %}
 
-    {% if not card_pull %}
-    <div>
-      <label for="{{ card_input_id }}" class="text-sm font-semibold">Файлы ({{ card_accept }})</label>
-      <input type="file" id="{{ card_input_id }}" name="{{ card_input_name }}" accept="{{ card_accept }}"
-             {% if card_multiple %}multiple{% endif %} required
-             class="block w-full mt-2 text-sm text-secondary
-                    file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
-                    file:bg-accent file:text-white file:font-medium file:cursor-pointer
-                    hover:file:bg-accent-hover">
-    </div>
-    {% endif %}
+      {% if not card_pull %}
+      <div>
+        <label for="{{ card_input_id }}" class="text-sm font-semibold">Файлы ({{ card_accept }})</label>
+        <input type="file" id="{{ card_input_id }}" name="{{ card_input_name }}" accept="{{ card_accept }}"
+               {% if card_multiple %}multiple{% endif %} required
+               class="block w-full mt-2 text-sm text-secondary
+                      file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+                      file:bg-accent file:text-white file:font-medium file:cursor-pointer
+                      hover:file:bg-accent-hover">
+      </div>
+      {% endif %}
 
-    <button type="submit"
-            class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 font-medium transition-colors duration-150">
-      {% if card_pull %}Загрузить из Google-Таблицы{% else %}Загрузить{% endif %}
-    </button>
-  </form>
+      <button type="submit"
+              class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150">
+        {% if card_pull %}Загрузить из Google-Таблицы{% else %}Загрузить{% endif %}
+      </button>
+    </form>
+  {% endif %}
 </div>

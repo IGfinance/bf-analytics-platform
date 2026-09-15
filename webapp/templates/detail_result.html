@@ -13,7 +13,7 @@
     </p>
     {% if summary.unmapped_columns %}
       <div class="mt-4 bg-warning/10 border border-warning/30 rounded-lg p-4 max-w-xl">
-        <p class="text-sm text-warning font-medium">Встречены колонки не из column_mapping_wb.yaml:</p>
+        <p class="text-sm text-warning font-medium">Встречены колонки не из маппинга колонок:</p>
         <ul class="list-disc list-inside text-sm text-secondary mt-2">
           {% for c in summary.unmapped_columns %}<li>{{ c }}</li>{% endfor %}
         </ul>

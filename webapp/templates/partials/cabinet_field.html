@@ -1,11 +1,16 @@
 {% set field_id = field_id|default("cabinet") %}
+{% set cabinet_disabled = cabinet_disabled|default(false) %}
 <div>
-  <label for="{{ field_id }}" class="text-sm font-semibold">Кабинет</label>
+  <label for="{{ field_id }}" class="text-sm font-semibold {% if cabinet_disabled %}text-muted{% endif %}">Кабинет</label>
   <input type="text" id="{{ field_id }}" list="{{ field_id }}-list" data-cabinet-shared
-         placeholder="Например: AcmeShop" autocomplete="off" required
-         class="w-full mt-2 bg-page border border-border focus:border-accent focus:outline-none rounded-lg px-3 py-2 text-sm">
+         placeholder="Например: AcmeShop" autocomplete="off"
+         {% if cabinet_disabled %}disabled{% else %}required{% endif %}
+         class="w-full mt-2 bg-page border border-border rounded-lg px-3 py-2 text-sm
+                {% if cabinet_disabled %}opacity-50 cursor-not-allowed{% else %}focus:border-accent focus:outline-none{% endif %}">
   <datalist id="{{ field_id }}-list">
     {% for c in cabinets %}<option value="{{ c }}">{% endfor %}
   </datalist>
-  <p class="text-xs text-secondary mt-1">Название кабинета — как в отчётах WB.</p>
+  <p class="text-xs text-secondary mt-1">
+    {% if cabinet_disabled %}У проекта нет кабинетов WB или Ozon.{% else %}Название кабинета — как в отчётах WB/Ozon.{% endif %}
+  </p>
 </div>
