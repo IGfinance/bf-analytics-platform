@@ -13,6 +13,12 @@ database аргументами, log-колбэк, исключения вмес
 realt_expenses — вкладка «Остальные расходы»: матрица (колонка = статья с двумя
 шапками «Статья»/«Дата/Тип», строка = месяц). parse_expenses разворачивает её в
 длинные записи (месяц × статья) с типом-группой и флагом is_shaa (Шмилович).
+
+realt_bank_account / realt_cash / realt_accruals — вкладки «Расчетный счет»,
+«Наличные», «Начисления» (выгрузка из учётной системы клиента, плоские
+регистры движений денег и начислений). Строки уже плоские (не матрица),
+парсинг — позиционный по колонкам, строка считается данными, если у неё есть
+«Сумма» (иначе это декоративная/пустая строка в конце вкладки).
 """
 
 from __future__ import annotations
@@ -35,6 +41,55 @@ EXPENSES_COLUMNS = [
     "project_id", "period", "article", "expense_type", "amount", "is_shaa",
     "row_num", "col_num", "source_file",
 ]
+
+BANK_ACCOUNT_SHEET_NAME = "Расчетный счет"
+BANK_ACCOUNT_SOURCE = "gsheet:Расчетный счет"
+BANK_ACCOUNT_COLUMNS = [
+    "project_id", "account_label", "account_number", "operation_date", "amount",
+    "amount_signed", "counterparty", "counterparty_inn", "counterparty_account",
+    "purpose", "cf_subarticle", "project", "tag", "pl_article", "accrual_date",
+    "accrual_amount", "cf_article", "month_seq", "comment", "company_form",
+    "row_num", "source_file",
+]
+# Позиции колонок во вкладке «Расчетный счет» (0-based)
+_BANK_POS = {
+    "account_label": 0, "account_number": 1, "operation_date": 2, "amount": 3,
+    "amount_signed": 4, "counterparty": 5, "counterparty_inn": 6,
+    "counterparty_account": 7, "purpose": 8, "cf_subarticle": 9, "project": 10,
+    "tag": 11, "pl_article": 12, "accrual_date": 13, "accrual_amount": 14,
+    "cf_article": 15, "month_seq": 16, "comment": 17, "company_form": 18,
+}
+
+CASH_SHEET_NAME = "Наличные"
+CASH_SOURCE = "gsheet:Наличные"
+CASH_COLUMNS = [
+    "project_id", "operation_date", "account_name", "amount", "purpose",
+    "cf_subarticle", "project", "tag", "pl_article", "accrual_date",
+    "accrual_amount", "cf_article", "month_seq", "company_form", "row_num",
+    "source_file",
+]
+# Позиции колонок во вкладке «Наличные» (0-based; колонка 0 и 5 — пустые в источнике)
+_CASH_POS = {
+    "operation_date": 1, "account_name": 2, "amount": 3, "purpose": 4,
+    "cf_subarticle": 6, "project": 7, "tag": 8, "pl_article": 9,
+    "accrual_date": 10, "accrual_amount": 11, "cf_article": 12, "month_seq": 13,
+    "company_form": 14,
+}
+
+ACCRUALS_SHEET_NAME = "Начисления"
+ACCRUALS_SOURCE = "gsheet:Начисления"
+ACCRUALS_COLUMNS = [
+    "project_id", "account_name", "operation_date", "amount", "purpose",
+    "comment", "cf_subarticle", "tag", "pl_article", "accrual_date",
+    "accrual_amount", "cf_article", "row_num", "source_file",
+]
+# Позиции колонок во вкладке «Начисления» (0-based; колонка 0 и 6 — пустые в источнике).
+# В отличие от «Расчетный счет»/«Наличные» здесь нет «Проект» и «Мес».
+_ACCRUALS_POS = {
+    "account_name": 1, "operation_date": 2, "amount": 3, "purpose": 4,
+    "comment": 5, "cf_subarticle": 7, "tag": 8, "pl_article": 9,
+    "accrual_date": 10, "accrual_amount": 11, "cf_article": 12,
+}
 
 # Рус. сокращения месяцев вкладки «Остальные расходы» (по первым 3 буквам,
 # после снятия точки). Формы нерегулярны: «мая-25» без точки, «февр.-25» и т.п.
@@ -87,6 +142,50 @@ def _date(value: str):
     value = (value or "").strip()
     try:
         return datetime.strptime(value, "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def _date_slash(value: str):
+    """'05/01/26' → date(2026, 1, 5). '' → None."""
+    value = (value or "").strip()
+    try:
+        return datetime.strptime(value, "%d/%m/%y").date()
+    except ValueError:
+        return None
+
+
+def _accrual_date(value: str):
+    """'5 янв. 26\\u202f' / '22 авг. 25' → date(год, месяц, день). '-'/'' → None.
+
+    Формат = '<день> <сокр.месяца>[.] <yy>' (узкий неразрывный пробел \\u202f
+    в конце снимается). Использует тот же словарь месяцев _RU_MON, что и
+    _ru_month (parse_expenses) — там же см. про нерегулярные сокращения.
+    """
+    value = (value or "").replace(" ", "").replace("\xa0", " ").strip()
+    if not value or value == "-":
+        return None
+    parts = value.split()
+    if len(parts) != 3:
+        return None
+    day_s, mon_s, yy_s = parts
+    if not day_s.isdigit() or not yy_s.isdigit():
+        return None
+    mon = mon_s.strip().rstrip(".").lower()
+    m = _RU_MON.get(mon[:3])
+    if m is None:
+        return None
+    year = 2000 + int(yy_s) if len(yy_s) == 2 else int(yy_s)
+    try:
+        return date(year, m, int(day_s))
+    except ValueError:
+        return None
+
+
+def _int(value: str):
+    value = (value or "").strip()
+    try:
+        return int(value)
     except ValueError:
         return None
 
@@ -218,6 +317,97 @@ def parse_expenses(values: list[list[str]]) -> tuple[list[dict], int]:
     return rows, skipped
 
 
+def _flat_row(raw: list, pos: dict, row_num: int, source: str, str_fields: set,
+              date_fields: set, num_fields: set, amount_field: str = "amount") -> dict | None:
+    """Общий каркас разбора плоской (не матричной) строки: строка — данные,
+    только если распознаётся её `amount_field` (иначе это пустая/декоративная
+    строка в конце вкладки — пропускаем).
+    """
+    amount_raw = _cell(raw, pos[amount_field])
+    amount = _num(amount_raw)
+    if amount is None:
+        return None
+
+    rec = {"row_num": row_num, "source_file": source}
+    for f in str_fields:
+        rec[f] = _cell(raw, pos[f]) or None
+    for f in date_fields:
+        parser = _accrual_date if f == "accrual_date" else _date_slash
+        rec[f] = parser(_cell(raw, pos[f]))
+    for f in num_fields:
+        rec[f] = _num(_cell(raw, pos[f]))
+    if "month_seq" in pos:
+        rec["month_seq"] = _int(_cell(raw, pos["month_seq"]))
+    return rec
+
+
+def parse_bank_account(values: list[list[str]]) -> tuple[list[dict], int]:
+    """Вкладка «Расчетный счет» (плоский регистр движений по р/с) → записи.
+
+    Строка — данные, если у неё есть «Сумма» (col 3); иначе (пустые/декоративные
+    строки в конце вкладки, напр. одинокий «-») — пропуск. row_num — 1-based
+    позиция во вкладке (включая заголовок), ключ дедупа при перезаливке.
+    """
+    str_fields = {"account_label", "account_number", "counterparty",
+                  "counterparty_inn", "counterparty_account", "purpose",
+                  "cf_subarticle", "project", "tag", "pl_article", "cf_article",
+                  "comment", "company_form"}
+    date_fields = {"operation_date", "accrual_date"}
+    num_fields = {"amount", "amount_signed", "accrual_amount"}
+
+    rows, skipped = [], 0
+    for row_num, raw in enumerate(values[1:], start=2):
+        rec = _flat_row(raw, _BANK_POS, row_num, BANK_ACCOUNT_SOURCE,
+                         str_fields, date_fields, num_fields)
+        if rec is None:
+            skipped += 1
+            continue
+        rows.append(rec)
+    return rows, skipped
+
+
+def parse_cash(values: list[list[str]]) -> tuple[list[dict], int]:
+    """Вкладка «Наличные» (плоский регистр движений наличных/карт) → записи.
+
+    Контракт как у parse_bank_account (строка — данные, если есть «Сумма»).
+    """
+    str_fields = {"account_name", "purpose", "cf_subarticle", "project", "tag",
+                  "pl_article", "cf_article", "company_form"}
+    date_fields = {"operation_date", "accrual_date"}
+    num_fields = {"amount", "accrual_amount"}
+
+    rows, skipped = [], 0
+    for row_num, raw in enumerate(values[1:], start=2):
+        rec = _flat_row(raw, _CASH_POS, row_num, CASH_SOURCE,
+                         str_fields, date_fields, num_fields)
+        if rec is None:
+            skipped += 1
+            continue
+        rows.append(rec)
+    return rows, skipped
+
+
+def parse_accruals(values: list[list[str]]) -> tuple[list[dict], int]:
+    """Вкладка «Начисления» (регистр по методу начисления, без «Проект»/«Мес»,
+    в отличие от «Расчетный счет»/«Наличные») → записи. Контракт как у
+    parse_bank_account.
+    """
+    str_fields = {"account_name", "purpose", "comment", "cf_subarticle", "tag",
+                  "pl_article", "cf_article"}
+    date_fields = {"operation_date", "accrual_date"}
+    num_fields = {"amount", "accrual_amount"}
+
+    rows, skipped = [], 0
+    for row_num, raw in enumerate(values[1:], start=2):
+        rec = _flat_row(raw, _ACCRUALS_POS, row_num, ACCRUALS_SOURCE,
+                         str_fields, date_fields, num_fields)
+        if rec is None:
+            skipped += 1
+            continue
+        rows.append(rec)
+    return rows, skipped
+
+
 def get_client(database: str | None = None):
     host = os.environ["CLICKHOUSE_HOST"]
     port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
@@ -290,3 +480,51 @@ def ingest_expenses(project_id: int, log=print, database: str | None = None,
     log(f"Загружено {len(data)} строк в realt_expenses.")
 
     return {"rows": len(data), "skipped": skipped}
+
+
+def _ingest_flat(project_id: int, log, database: str | None, spreadsheet_id: str | None,
+                  sheet_name: str, parse_fn, table: str, columns: list[str]) -> dict:
+    """Общий каркас ingest_* для плоских регистров (bank_account/cash/accruals)."""
+    if spreadsheet_id is None:
+        spreadsheet_id = os.environ["GSHEETS_SPREADSHEET_ID"]
+
+    log(f"  Читаю вкладку «{sheet_name}» из Google Sheets…")
+    values = read_tab(spreadsheet_id, sheet_name)
+    rows, skipped = parse_fn(values)
+    if skipped:
+        log(f"    Пропущено строк без суммы (пустые/декоративные): {skipped}")
+    if not rows:
+        raise ValueError(f"Не найдено ни одной строки во вкладке «{sheet_name}»")
+
+    for row in rows:
+        row["project_id"] = project_id
+
+    client = get_client(database=database)
+    data = [[row.get(col) for col in columns] for row in rows]
+    client.insert(table, data, column_names=columns)
+    log(f"Загружено {len(data)} строк в {table}.")
+
+    return {"rows": len(data), "skipped": skipped}
+
+
+def ingest_bank_account(project_id: int, log=print, database: str | None = None,
+                        spreadsheet_id: str | None = None,
+                        sheet_name: str = BANK_ACCOUNT_SHEET_NAME) -> dict:
+    """Тянет вкладку «Расчетный счет» через Google Sheets API и пишет в realt_bank_account."""
+    return _ingest_flat(project_id, log, database, spreadsheet_id, sheet_name,
+                        parse_bank_account, "realt_bank_account", BANK_ACCOUNT_COLUMNS)
+
+
+def ingest_cash(project_id: int, log=print, database: str | None = None,
+                spreadsheet_id: str | None = None, sheet_name: str = CASH_SHEET_NAME) -> dict:
+    """Тянет вкладку «Наличные» через Google Sheets API и пишет в realt_cash."""
+    return _ingest_flat(project_id, log, database, spreadsheet_id, sheet_name,
+                        parse_cash, "realt_cash", CASH_COLUMNS)
+
+
+def ingest_accruals(project_id: int, log=print, database: str | None = None,
+                    spreadsheet_id: str | None = None,
+                    sheet_name: str = ACCRUALS_SHEET_NAME) -> dict:
+    """Тянет вкладку «Начисления» через Google Sheets API и пишет в realt_accruals."""
+    return _ingest_flat(project_id, log, database, spreadsheet_id, sheet_name,
+                        parse_accruals, "realt_accruals", ACCRUALS_COLUMNS)
