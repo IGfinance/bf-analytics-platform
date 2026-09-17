@@ -350,3 +350,207 @@ ALTER TABLE realt_pl_by_group_month COMMENT COLUMN group_name 'Группа P&L:
 ALTER TABLE realt_pl_by_group_month COMMENT COLUMN article 'Статья расхода (или «ФОТ Маркетинг»/«Взносы и НДФЛ ФОТ Маркетинг»/«ФОТ Управление»/«НДФЛ - Управление»/«Взносы ФОТ - Управление» для строк, пришедших из realt_payroll).';
 ALTER TABLE realt_pl_by_group_month COMMENT COLUMN month 'Начало месяца операции, время 12:00 (см. realt_metrics_by_month.month — против сдвига Report Timezone в Metabase).';
 ALTER TABLE realt_pl_by_group_month COMMENT COLUMN amount 'Сумма за месяц по статье = SUM(amount) из объединения realt_bank_account/realt_cash/realt_accruals (метод начисления, если есть, иначе кассовый), либо -SUM(accrued_total)/НДФЛ+взносы из realt_payroll для строк ФОТ.';
+
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Юнит-экономика по врачу (2026-09-17)
+-- ═══════════════════════════════════════════════════════════════════════
+--
+-- Раньше ФОТ «на визит»/«на клиента» считался как (ФОТ всей роли за месяц) /
+-- (визиты/клиенты ВСЕЙ клиники за месяц) — усреднение по больнице, а не по
+-- конкретному врачу; выбрать одного врача и получить корректную цифру было
+-- нельзя. Плюс исключение Шмиловича/Онегиной шло по названию услуги
+-- (position(service, 'шмил'/'онег')) — не по личности врача, отсюда и ложные
+-- срабатывания (услуга с чужим именем в составном названии), и пропуски
+-- (визит Шмиловича с обычным названием услуги).
+--
+-- Ключ, который это чинит — realt_employees (employee_id ↔ ФИО, ФИО
+-- совпадает с klientiks_operations.doctor с точностью до регистра, отсюда
+-- upperUTF8(trim(...)) при сравнении). Через него зарплата (realt_payroll,
+-- по employee_id) соединяется с приёмами (klientiks_operations, по doctor).
+--
+-- Три VIEW, от детального к агрегированному:
+--   realt_visits_categorized  — один визит = одна строка, с employee_id и
+--                               role_group (включая ФОТ ШАА — теперь по
+--                               личности врача, не по названию услуги);
+--   realt_payroll_categorized — одна строка realt_payroll, с той же
+--                               категоризацией role_group;
+--   realt_doctor_month        — месяц × врач: revenue/visits/clients из
+--                               визитов ЭТОГО врача, fot из ЕГО зарплаты,
+--                               fot_per_visit/fot_per_client — на этом уже
+--                               корректны для одного конкретного врача;
+--   realt_role_month          — месяц × роль (агрегат realt_doctor_month):
+--                               «ФОТ Психиатры на визит» и т.п. теперь =
+--                               ФОТ психиатров / ВИЗИТЫ, ПРИНЯТЫЕ психиатрами
+--                               (а не визиты всей клиники, как раньше).
+--
+-- ШАА — не исключение/вычитание, а такая же полноценная категория role_group,
+-- как «ФОТ Психиатры»/«ФОТ Психологи»: определяется по department='ШАА' в
+-- realt_payroll (см. голову realt_metrics_by_month) — сейчас это Шмилович
+-- Андрей Аркадьевич, Онегина Елена Юрьевна и их администратор Ерзаулова
+-- Анастасия. Их приёмы (по ФИО, не по названию услуги) идут в ФОТ ШАА, а не
+-- пропадают/не путаются с чужими визитами.
+--
+-- «Без ФОТ-кода» / «Не в справочнике сотрудников» — два разных случая
+-- неполноты: первый — врач есть в realt_employees, но его employee_id не
+-- находит пару в realt_payroll (старые/бывшие врачи вне системы ФОТ,
+-- согласовано с владельцем 2026-09-17 — это ожидаемо, не баг); второй —
+-- врач из Клиентикс вообще не найден в realt_employees. Оба видны отдельными
+-- строками role_group, а не растворяются в других категориях — так пропуск
+-- сразу заметен на дашборде, а не подделывает чужие цифры.
+
+CREATE OR REPLACE VIEW realt_visits_categorized AS
+WITH doctor_key AS (
+    SELECT employee_id, full_name, upperUTF8(trim(full_name)) AS name_key
+    FROM realt_employees FINAL
+    WHERE full_name IS NOT NULL AND full_name != ''
+),
+shaa_employees AS (
+    SELECT DISTINCT employee_id FROM realt_payroll WHERE department = 'ШАА'
+),
+employee_role AS (
+    SELECT employee_id, argMax(role, period) AS role
+    FROM realt_payroll
+    WHERE period IS NOT NULL
+    GROUP BY employee_id
+)
+SELECT
+    k.visit_start                                             AS visit_start,
+    toDateTime(toStartOfMonth(k.visit_start)) + INTERVAL 12 HOUR AS month,
+    k.card_number                                             AS card_number,
+    k.amount                                                  AS amount,
+    k.service                                                 AS service,
+    nullIf(d.employee_id, '')                                 AS employee_id,
+    coalesce(nullIf(d.full_name, ''), k.doctor)                AS doctor_name,
+    multiIf(
+        d.employee_id != '' AND se.employee_id != '', 'ФОТ ШАА',
+        d.employee_id != '' AND er.role IS NOT NULL, er.role,
+        d.employee_id != '', 'Без ФОТ-кода',
+        'Не в справочнике сотрудников'
+    )                                                          AS role_group,
+    row_number() OVER (PARTITION BY k.card_number ORDER BY k.visit_start) AS visit_seq
+FROM klientiks_operations k
+LEFT JOIN doctor_key d ON upperUTF8(trim(k.doctor)) = d.name_key
+LEFT JOIN shaa_employees se ON d.employee_id = se.employee_id
+LEFT JOIN employee_role er ON d.employee_id = er.employee_id
+WHERE k.amount > 0
+  AND k.visit_start IS NOT NULL
+  AND k.card_number != ''
+  AND positionCaseInsensitiveUTF8(k.doctor, 'тест') = 0;
+
+ALTER TABLE realt_visits_categorized COMMENT COLUMN month 'Начало месяца визита, время 12:00 (см. realt_metrics_by_month.month).';
+ALTER TABLE realt_visits_categorized COMMENT COLUMN employee_id 'Код сотрудника (realt_employees/realt_payroll). NULL — врач не найден в справочнике сотрудников (см. role_group).';
+ALTER TABLE realt_visits_categorized COMMENT COLUMN doctor_name 'ФИО врача — из справочника сотрудников, если найден, иначе как в Клиентикс (doctor).';
+ALTER TABLE realt_visits_categorized COMMENT COLUMN role_group 'Категория: ФОТ Психиатры/Психологи/Администраторы/Управление/Маркетинг/ШАА (по employee_id, не по названию услуги) — либо «Без ФОТ-кода»/«Не в справочнике сотрудников» при неполноте данных.';
+ALTER TABLE realt_visits_categorized COMMENT COLUMN visit_seq 'Порядковый номер визита клиента (по card_number, сортировка по дате) — для когорты «новый клиент», visit_seq=1.';
+
+
+CREATE OR REPLACE VIEW realt_payroll_categorized AS
+SELECT
+    toDateTime(toStartOfMonth(p.period)) + INTERVAL 12 HOUR AS month,
+    nullIf(p.employee_id, '')                                AS employee_id,
+    multiIf(se.employee_id != '', 'ФОТ ШАА', p.role)        AS role_group,
+    p.pay_type                                               AS pay_type,
+    p.accrued_total                                          AS accrued_total,
+    p.ndfl                                                   AS ndfl,
+    p.contributions                                          AS contributions
+FROM realt_payroll p
+LEFT JOIN (SELECT DISTINCT employee_id FROM realt_payroll WHERE department = 'ШАА') se
+    ON p.employee_id = se.employee_id
+WHERE p.period IS NOT NULL;
+
+ALTER TABLE realt_payroll_categorized COMMENT COLUMN month 'Месяц начисления, время 12:00 (см. realt_metrics_by_month.month).';
+ALTER TABLE realt_payroll_categorized COMMENT COLUMN role_group 'Как в realt_visits_categorized — department=ШАА перекрывает исходный role.';
+
+
+CREATE OR REPLACE VIEW realt_doctor_month AS
+WITH visit_agg AS (
+    SELECT
+        month, employee_id, doctor_name, role_group,
+        sum(amount)                              AS revenue,
+        count()                                  AS visits,
+        uniqExact(card_number)                   AS clients,
+        uniqExactIf(card_number, visit_seq = 1)  AS new_clients
+    FROM realt_visits_categorized
+    GROUP BY month, employee_id, doctor_name, role_group
+),
+payroll_agg AS (
+    SELECT
+        month, employee_id, any(role_group) AS role_group,
+        sum(accrued_total)                                            AS fot,
+        sumIf(accrued_total, pay_type = 'Проценты')                   AS fot_pct,
+        sumIf(accrued_total, pay_type IN ('Оклад','Бонус'))           AS fot_oklad,
+        sum(coalesce(ndfl, 0) + coalesce(contributions, 0))           AS fot_taxes
+    FROM realt_payroll_categorized
+    GROUP BY month, employee_id
+)
+SELECT
+    coalesce(v.month, p.month)                    AS month,
+    coalesce(v.employee_id, p.employee_id)        AS employee_id,
+    coalesce(v.doctor_name, dn.full_name)         AS doctor_name,
+    coalesce(v.role_group, p.role_group)          AS role_group,
+    v.revenue                                     AS revenue,
+    v.visits                                      AS visits,
+    v.clients                                     AS clients,
+    v.new_clients                                 AS new_clients,
+    p.fot                                         AS fot,
+    p.fot_pct                                     AS fot_pct,
+    p.fot_oklad                                   AS fot_oklad,
+    p.fot_taxes                                   AS fot_taxes,
+    v.revenue / nullIf(v.visits, 0)               AS avg_check,
+    p.fot / nullIf(v.visits, 0)                   AS fot_per_visit,
+    p.fot / nullIf(v.clients, 0)                  AS fot_per_client,
+    v.revenue - p.fot + p.fot_taxes               AS profit_after_fot
+FROM visit_agg v
+FULL OUTER JOIN payroll_agg p ON v.month = p.month AND v.employee_id = p.employee_id
+LEFT JOIN (SELECT employee_id, full_name FROM realt_employees FINAL WHERE full_name IS NOT NULL) dn
+    ON coalesce(v.employee_id, p.employee_id) = dn.employee_id
+ORDER BY month, employee_id;
+
+ALTER TABLE realt_doctor_month COMMENT COLUMN fot_per_visit 'ФОТ ЭТОГО врача за месяц / визиты ЭТОГО врача за месяц — корректно на уровне одного врача (не средняя по больнице).';
+ALTER TABLE realt_doctor_month COMMENT COLUMN fot_per_client 'ФОТ ЭТОГО врача за месяц / уникальные клиенты ЭТОГО врача за месяц.';
+ALTER TABLE realt_doctor_month COMMENT COLUMN profit_after_fot 'Выручка врача − его ФОТ + налоги/взносы с его ФОТ (налоги обычно отрицательные — фактически вычитаются).';
+
+
+CREATE OR REPLACE VIEW realt_role_month AS
+WITH visit_agg AS (
+    SELECT
+        month, role_group,
+        sum(amount)                              AS revenue,
+        count()                                  AS visits,
+        uniqExact(card_number)                   AS clients,
+        uniqExactIf(card_number, visit_seq = 1)  AS new_clients
+    FROM realt_visits_categorized
+    GROUP BY month, role_group
+),
+payroll_agg AS (
+    SELECT
+        month, role_group,
+        sum(accrued_total)                                            AS fot,
+        sumIf(accrued_total, pay_type = 'Проценты')                   AS fot_pct,
+        sumIf(accrued_total, pay_type IN ('Оклад','Бонус'))           AS fot_oklad,
+        sum(coalesce(ndfl, 0) + coalesce(contributions, 0))           AS fot_taxes
+    FROM realt_payroll_categorized
+    GROUP BY month, role_group
+)
+SELECT
+    coalesce(v.month, p.month)           AS month,
+    coalesce(v.role_group, p.role_group) AS role_group,
+    v.revenue                            AS revenue,
+    v.visits                             AS visits,
+    v.clients                            AS clients,
+    v.new_clients                        AS new_clients,
+    p.fot                                AS fot,
+    p.fot_pct                            AS fot_pct,
+    p.fot_oklad                          AS fot_oklad,
+    p.fot_taxes                          AS fot_taxes,
+    v.revenue / nullIf(v.visits, 0)      AS avg_check,
+    p.fot / nullIf(v.visits, 0)          AS fot_per_visit,
+    p.fot / nullIf(v.clients, 0)         AS fot_per_client,
+    v.revenue - p.fot + p.fot_taxes      AS profit_after_fot
+FROM visit_agg v
+FULL OUTER JOIN payroll_agg p ON v.month = p.month AND v.role_group = p.role_group
+ORDER BY month, role_group;
+
+ALTER TABLE realt_role_month COMMENT COLUMN fot_per_visit 'ФОТ всех врачей этой роли за месяц / визиты, ПРИНЯТЫЕ врачами этой роли (не визиты всей клиники — отличие от старого realt_metrics_by_month).';
+ALTER TABLE realt_role_month COMMENT COLUMN fot_per_client 'Аналогично fot_per_visit, но на уникального клиента этой роли. ВНИМАНИЕ: если клиент в одном месяце был и у психиатра, и у психолога, он войдёт в clients обеих ролей — это НЕ то же самое, что «уникальные клиенты клиники».';
