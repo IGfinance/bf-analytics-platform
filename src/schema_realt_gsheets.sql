@@ -119,6 +119,28 @@ ENGINE = ReplacingMergeTree(loaded_at)
 PARTITION BY toYYYYMM(coalesce(accrual_date, operation_date, toDate('1970-01-01')))
 ORDER BY (project_id, source_file, row_num);
 
+-- realt_service_categories — вкладка «Категорирование услуг»: справочник
+-- услуга → категории (без дублей по названию услуги). Ключ для джойна —
+-- service, совпадает с klientiks_operations.service. qualification —
+-- квалификация врача (джун/мидл/синьор/топ/неизв) — то, чего не хватало для
+-- среза «Уровень врача» в помесячной юнитке.
+CREATE TABLE IF NOT EXISTS realt_service_categories
+(
+    project_id    UInt32,
+    service       String            COMMENT 'Название услуги (изначальное) — ключ, совпадает с klientiks_operations.service',
+    doctor_type   Nullable(String)  COMMENT 'Тип врача (Психиатр/Психолог/Психотерапевт/Невролог/Другое)',
+    duration      Nullable(String)  COMMENT 'Продолжительность приёма (напр. «50 мин»)',
+    service_kind  Nullable(String)  COMMENT 'Тип услуги (Разовый/Повторный)',
+    format        Nullable(String)  COMMENT 'Формат (Оффлайн/Онлайн/Выезд)',
+    periodicity   Nullable(String)  COMMENT 'Периодичность (Первичный/Вторичный)',
+    qualification Nullable(String)  COMMENT 'Квалификация врача (джун/мидл/синьор/топ/неизв)',
+    row_num       UInt32            COMMENT 'Позиция строки во вкладке, для дедупа при перезаливке',
+    source_file   String,
+    loaded_at     DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(loaded_at)
+ORDER BY (project_id, source_file, row_num);
+
 CREATE TABLE IF NOT EXISTS realt_accruals
 (
     project_id      UInt32,

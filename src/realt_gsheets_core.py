@@ -19,6 +19,11 @@ realt_bank_account / realt_cash / realt_accruals — вкладки «Расче
 регистры движений денег и начислений). Строки уже плоские (не матрица),
 парсинг — позиционный по колонкам, строка считается данными, если у неё есть
 «Сумма» (иначе это декоративная/пустая строка в конце вкладки).
+
+realt_service_categories — вкладка «Категорирование услуг»: справочник
+услуга → категории (тип врача, продолжительность, тип/формат/периодичность
+услуги, квалификация врача — джун/мидл/синьор/топ). Ключ — точное название
+услуги (совпадает с klientiks_operations.service). Без дублей, 246 строк.
 """
 
 from __future__ import annotations
@@ -89,6 +94,18 @@ _ACCRUALS_POS = {
     "account_name": 1, "operation_date": 2, "amount": 3, "purpose": 4,
     "comment": 5, "cf_subarticle": 7, "tag": 8, "pl_article": 9,
     "accrual_date": 10, "accrual_amount": 11, "cf_article": 12,
+}
+
+SERVICE_CATEGORIES_SHEET_NAME = "Категорирование услуг"
+SERVICE_CATEGORIES_SOURCE = "gsheet:Категорирование услуг"
+SERVICE_CATEGORIES_COLUMNS = [
+    "project_id", "service", "doctor_type", "duration", "service_kind", "format",
+    "periodicity", "qualification", "row_num", "source_file",
+]
+# Позиции колонок во вкладке «Категорирование услуг» (0-based; 0 и 2 — пустые)
+_SERVICE_CAT_POS = {
+    "service": 1, "doctor_type": 3, "duration": 4, "service_kind": 5,
+    "format": 6, "periodicity": 7, "qualification": 8,
 }
 
 # Рус. сокращения месяцев вкладки «Остальные расходы» (по первым 3 буквам,
@@ -406,6 +423,39 @@ def parse_accruals(values: list[list[str]]) -> tuple[list[dict], int]:
             continue
         rows.append(rec)
     return rows, skipped
+
+
+def parse_service_categories(values: list[list[str]]) -> tuple[list[dict], int]:
+    """Вкладка «Категорирование услуг» (справочник услуга → категории) → записи.
+
+    Строка — данные, если есть «Название услуги» (col 1); иначе пропуск.
+    Без дедупа по имени — на момент написания дублей в справочнике нет,
+    но row_num остаётся ключом дедупа при перезаливке (ReplacingMergeTree).
+    """
+    rows, skipped = [], 0
+    for row_num, raw in enumerate(values[1:], start=2):
+        service = _cell(raw, _SERVICE_CAT_POS["service"])
+        if not service:
+            skipped += 1
+            continue
+        rec = {
+            "row_num": row_num,
+            "source_file": SERVICE_CATEGORIES_SOURCE,
+            "service": service,
+        }
+        for f in ("doctor_type", "duration", "service_kind", "format", "periodicity", "qualification"):
+            rec[f] = _cell(raw, _SERVICE_CAT_POS[f]) or None
+        rows.append(rec)
+    return rows, skipped
+
+
+def ingest_service_categories(project_id: int, log=print, database: str | None = None,
+                              spreadsheet_id: str | None = None,
+                              sheet_name: str = SERVICE_CATEGORIES_SHEET_NAME) -> dict:
+    """Тянет вкладку «Категорирование услуг» через Google Sheets API и пишет в realt_service_categories."""
+    return _ingest_flat(project_id, log, database, spreadsheet_id, sheet_name,
+                        parse_service_categories, "realt_service_categories",
+                        SERVICE_CATEGORIES_COLUMNS)
 
 
 def get_client(database: str | None = None):
