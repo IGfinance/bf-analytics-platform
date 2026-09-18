@@ -29,8 +29,9 @@
     </div>
   </div>
 
-  {# Площадки (WB/Ozon — активная форма, остальные — заглушка без адаптера) —
-     одна сетка карточек одинакового вида, единая карточка на любое состояние. #}
+  {# Площадки (WB/Ozon — активная форма, остальные — заглушка без адаптера) и
+     источники сырых данных (банк/карты/Клиентикс) — одна общая сетка карточек
+     одинакового вида, единая карточка на любое состояние. #}
   <div class="grid gap-6 mt-6 lg:grid-cols-2">
     {% set card_title = "Детальный отчёт WB" %}
     {% set card_description = "Загрузите файлы детальных отчётов (xlsx) — данные сохранятся в wb_reports." %}
@@ -69,10 +70,7 @@
       {% set card_disabled_reason = "Площадка пока не поддерживается — адаптер загрузки ещё не реализован." %}
       {% include "partials/upload_card.html" %}
     {% endfor %}
-  </div>
 
-  <h2 class="text-xl font-bold font-montserrat mt-10">Источники данных</h2>
-  <div class="grid gap-6 mt-6 lg:grid-cols-2">
     {% for s in sources %}
       {% set card_title = s.label %}
       {% set card_description = s.description %}

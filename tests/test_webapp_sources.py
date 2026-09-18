@@ -26,14 +26,14 @@ import app as webapp  # noqa: E402
 
 def test_supported_sources_only_implemented():
     assert webapp.SUPPORTED_SOURCES == {
-        "bank_1c", "card_pdf", "klientiks", "gsheets_payroll", "gsheets_expenses",
+        "bank_1c", "card_pdf", "klientiks",
     }
 
 
 def test_build_source_cards_active_and_disabled(monkeypatch):
     monkeypatch.setattr(
         webapp, "get_project_sources",
-        lambda pid, db: ["bank_1c", "card_pdf", "klientiks", "gsheets_payroll", "unknown_src"],
+        lambda pid, db: ["bank_1c", "card_pdf", "klientiks", "unknown_src"],
     )
     with webapp.app.test_request_context():
         cards = webapp.build_source_cards(1, "myproj")
@@ -51,25 +51,9 @@ def test_build_source_cards_active_and_disabled(monkeypatch):
     assert by_key["klientiks"]["accept"] == ".csv"
     assert "/upload/klientiks" in by_key["klientiks"]["action"]
 
-    # Google-Таблица «Зарплаты» — активный pull-источник (кнопка-триггер, без файла)
-    assert by_key["gsheets_payroll"]["supported"] is True
-    assert by_key["gsheets_payroll"]["pull"] is True
-    assert by_key["gsheets_payroll"]["accept"] is None
-    assert "/upload/gsheets-payroll" in by_key["gsheets_payroll"]["action"]
-
     # неизвестный код-источник → disabled-заглушка
     assert by_key["unknown_src"]["supported"] is False
     assert by_key["unknown_src"]["action"] is None
-
-
-def test_gsheets_expenses_is_pull_source(monkeypatch):
-    monkeypatch.setattr(webapp, "get_project_sources", lambda pid, db: ["gsheets_expenses"])
-    with webapp.app.test_request_context():
-        cards = webapp.build_source_cards(1, "myproj")
-    card = next(c for c in cards if c["key"] == "gsheets_expenses")
-    assert card["supported"] is True
-    assert card["pull"] is True
-    assert "/upload/gsheets-expenses" in card["action"]
 
 
 def test_no_sources_gives_all_disabled(monkeypatch):
