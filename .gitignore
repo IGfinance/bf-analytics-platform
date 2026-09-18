@@ -22,5 +22,12 @@ data-files/
 node_modules/
 webapp/static/style.css
 
+# LaTeX (docs/formulas) — байпродукты сборки, не сам PDF (его коммитим)
+*.aux
+*.log
+*.toc
+*.out
+*.xdv
+
 # OS
 .DS_Store
