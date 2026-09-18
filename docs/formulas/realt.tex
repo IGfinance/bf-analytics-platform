@@ -1,0 +1,738 @@
+% Формулы метрик и схема данных — Реальт (клиника).
+%
+% Источник правды для формул — src/schema_realt_metrics_views.sql
+% (ClickHouse VIEW) и src/metabase_queries/realt_*.sql (native SQL
+% карточек Metabase). Этот файл описывает то же самое человеческим
+% языком + формулами, ничего не пересчитывает заново — при изменении
+% формулы в VIEW/карточке нужно поправить и здесь (см. последний раздел).
+%
+% Компиляция: pdflatex дважды подряд (для оглавления) — pdflatex realt.tex
+% && pdflatex realt.tex, либо latexmk -pdf realt.tex. Проверено вручную,
+% но НЕ скомпилировано локально (в среде, где это писалось, нет LaTeX) —
+% при первой сборке (например, в Overleaf) стоит внимательно посмотреть
+% на ER-диаграмму (последний раздел) — там больше всего написано руками
+% "вслепую".
+
+\documentclass[11pt,a4paper]{article}
+\usepackage[T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[russian]{babel}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning, fit, arrows.meta}
+\usepackage[colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black]{hyperref}
+
+% Печать SQL/ClickHouse-идентификаторов моноширинным шрифтом без ручного
+% экранирования подчёркиваний ("_" в обычном тексте LaTeX — спецсимвол).
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+\title{Реальт --- формулы метрик и схема данных}
+\author{bf-analytics-platform}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\clearpage
+
+\section{Как пользоваться документом}
+
+Единое место, где видно, \emph{как именно} считается каждая метрика на
+дашбордах Metabase проекта «Реальт» (клиника), и как связаны между собой
+таблицы-источники. Формулы здесь --- не отдельная версия правды, а
+человекочитаемое описание того, что реально лежит в ClickHouse VIEW
+(\code{src/schema_realt_metrics_views.sql}) и native SQL карточек
+(\code{src/metabase_queries/realt_*.sql}). Если формула в коде меняется ---
+этот документ нужно обновить тем же коммитом (см.
+раздел~\ref{sec:maintain}).
+
+Структура: раздел~\ref{sec:terms} --- термины и ключи, которые
+используются везде дальше; разделы~\ref{sec:sources}--\ref{sec:other-views}
+--- сами метрики, сгруппированные по VIEW/карточке, от которых они
+считаются; раздел~\ref{sec:filters} --- параметры (фильтры) дашбордов;
+раздел~\ref{sec:er} --- схема соединения таблиц-источников.
+
+\section{Термины и ключи}
+\label{sec:terms}
+
+\begin{longtable}{@{}p{3.6cm}p{11cm}@{}}
+\toprule
+Термин & Определение \\
+\midrule
+\endfirsthead
+\toprule
+Термин & Определение \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\textbf{Визит} &
+Одна строка \code{klientiks_operations} с суммой $>0$ и заполненной датой
+начала (\code{visit_start}) --- один приём/услуга одного клиента. \\
+\textbf{Клиент} &
+Идентифицируется по \code{card_number} (номер карты в Клиентикс) ---
+стабильный ID для когорт/LTV, не по ФИО/телефону. \\
+\textbf{Врач / сотрудник} &
+Две разные вещи, связанные ключом. В \code{klientiks_operations.doctor}
+--- текстовое ФИО (как ввели в Клиентикс). В \code{realt_payroll} и
+\code{realt_employees} --- \code{employee_id}, короткий код (например,
+\code{АрсТБ\_ТД}). Связка ФИО~$\to$~\code{employee_id} --- через
+\code{realt_employees.full_name}, сравнение
+\code{upperUTF8(trim(...))} (регистронезависимо, без пробелов по краям).
+См.\ раздел~\ref{sec:categorized}. \\
+\textbf{Роль / \code{role_group}} &
+Категория ФОТ сотрудника: ФОТ Психиатры / ФОТ Психологи / ФОТ
+Администраторы / ФОТ Управление / ФОТ Маркетинг / \textbf{ФОТ ШАА}.
+Начиная с 2026-09-17 определяется по \code{department = 'ШАА'} в
+\code{realt_payroll} (личность сотрудника), а не по тексту услуги --- см.
+раздел~\ref{sec:categorized}. \\
+\textbf{ШАА} &
+Историческое сокращение по фамилиям Шмилович/Онегина (изначально ---
+подразделение этих двух врачей). Сейчас как \code{role_group} включает
+также их администратора (Ерзаулова Анастасия) --- см.\ таблицу~\ref{tab:role-group}. \\
+\textbf{Новый клиент (когорта)} &
+Клиент, чей \emph{первый визит за всю историю} пришёлся на рассматриваемый
+период. Считается по вычисленному номеру визита
+\code{visit_seq = row_number() OVER (PARTITION BY card_number ORDER BY visit_start)}
+--- по ВСЕЙ истории клиента, а не по видимым в текущем фильтре визитам.
+\textbf{Не путать} с фильтром дашборда «Тип клиента: Первичный/Повторный»
+--- см.\ таблицу~\ref{tab:dash-filters}, это про визиты внутри одного
+месяца, другая метрика с похожим названием. \\
+\end{longtable}
+
+\section{Источники данных}
+\label{sec:sources}
+
+Сырые ClickHouse-таблицы, из которых считаются все метрики ниже. Полные
+схемы --- \code{src/schema_klientiks.sql} и
+\code{src/schema_realt_gsheets.sql}.
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{\code{klientiks_operations}} --- построчная выгрузка из
+  учётной системы клиники (Клиентикс): один визит = одна строка
+  (клиент/врач/услуга/дата/сумма).
+\item \textbf{\code{realt_payroll}} --- вкладка «Импорт ФОТ» Google-Таблицы:
+  начисления по сотрудникам помесячно (роль, тип оплаты, начислено,
+  НДФЛ, взносы).
+\item \textbf{\code{realt_employees}} --- справочник
+  \code{employee_id}~$\leftrightarrow$~ФИО, 84 строки без дублей.
+  \textit{Внимание для поддержки репозитория:} эта таблица и
+  \code{realt_service_categories} задеплоены и загружены на прод, но код
+  их создания (\code{feat/realt-employees}, \code{feat/realt-service-categories})
+  на момент написания документа \textbf{не смёржен в master} --- см.\
+  раздел~\ref{sec:maintain}.
+\item \textbf{\code{realt_service_categories}} --- справочник
+  \code{service}~$\to$~категории (тип врача, квалификация и т.д.), ключ ---
+  \code{service} (как в \code{klientiks_operations.service}).
+  \textbf{Пока не используется} ни в одной VIEW/карточке из этого
+  документа --- загружен про запас, для будущего среза «уровень врача».
+\item \textbf{\code{realt_expenses}} --- вкладка «Остальные расходы»:
+  месяц~$\times$~статья, суммы отрицательные (расход).
+\item \textbf{\code{realt_bank_account} / \code{realt_cash} / \code{realt_accruals}}
+  --- вкладки «Расчетный счет» / «Наличные» / «Начисления»: плоские
+  регистры операций (по кассовому методу и по методу начисления).
+  Между собой НЕ джойнятся --- объединяются \code{UNION ALL} по
+  одинаковой роли колонок (\code{pl_article}, дата, сумма) в
+  \code{realt_pl_by_group_month} (раздел~\ref{sec:pl}).
+\end{itemize}
+
+\section{Базовые фильтры видимости визита}
+\label{sec:base-filters}
+
+Применяются в \code{realt_metrics_by_month} (раздел~\ref{sec:monthly}) при
+чтении \code{klientiks_operations}:
+
+\begin{itemize}[leftmargin=*]
+\item \code{amount > 0} --- нулевые/отрицательные суммы не считаются
+  выручкой;
+\item \code{visit_start} не пусто;
+\item \code{card_number != ''};
+\item \code{positionCaseInsensitiveUTF8(doctor, 'тест') = 0} --- исполнитель
+  «тест» исключён;
+\item \code{positionCaseInsensitiveUTF8(service, 'шмил') = 0} и то же для
+  \code{'онег'} --- визиты, где в НАЗВАНИИ УСЛУГИ встречается «шмил»/«онег»,
+  исключены из выручки компании целиком.
+\end{itemize}
+
+\textbf{Это устаревший, текстовый способ исключить Шмиловича/Онегину} ---
+работает только на уровне выручки \code{realt_metrics_by_month} (раздел~\ref{sec:monthly}).
+У него два известных изъяна: визит Шмиловича с обычным названием услуги
+не исключается (просачивается в общую выручку), а чужой визит с их именем
+в составном названии услуги --- наоборот, ложно исключается. На реальных
+данных расхождение --- около 2.46\,млн~₽ / 313 визитов. Раздел~\ref{sec:categorized}
+описывает более точный, личностный способ (по \code{employee_id}),
+которым считается юнит-экономика по врачу (раздел~\ref{sec:doctor-econ}) ---
+эти две логики \textbf{сознательно разные}, компания-целиком метрики
+(раздел~\ref{sec:monthly}) на новую логику пока не переведены (см.\
+раздел~\ref{sec:maintain}).
+
+\section{Месячные метрики компании (\code{realt\_metrics\_by\_month})}
+\label{sec:monthly}
+
+VIEW: одна строка = один месяц (\code{month}, заякорен на 12:00 --- иначе
+Report Timezone Metabase сдвигает 1-е число на конец предыдущего месяца).
+Строится \code{FULL OUTER JOIN} двух агрегатов --- визитов и ФОТ по
+месяцу --- сознательно не \code{LEFT JOIN}, иначе месяц, где ФОТ уже
+загружен, а визитов в Клиентикс ещё нет (например, текущий месяц), молча
+пропадает из VIEW целиком (это был баг, исправленный 2026-09-17).
+
+\subsection{Выручка, визиты, клиенты}
+
+\[
+  \code{revenue} = \sum \code{amount}
+  \qquad
+  \code{visits} = \text{count}(*)
+  \qquad
+  \code{clients} = \text{uniqExact}(\code{card_number})
+\]
+\[
+  \code{new_clients} = \text{uniqExactIf}(\code{card_number},\; \code{visit_seq} = 1)
+  \qquad
+  \code{avg_check} = \dfrac{\code{revenue}}{\code{visits}}
+\]
+
+По визитам месяца, прошедшим базовые фильтры (раздел~\ref{sec:base-filters}).
+\code{new_clients} --- см.\ определение «Новый клиент» в
+таблице терминов, раздел~\ref{sec:terms}.
+
+\subsection{ФОТ по ролям и типу оплаты}
+
+Общая формула для \textbf{любой} строки таблицы~\ref{tab:fot-monthly}:
+сумма \code{accrued_total} (колонка «Начислено ИТОГО» из
+\code{realt_payroll}, \textbf{не} «К оплате» --- согласовано с клиентом
+2026-09-14) по строкам месяца, отфильтрованным по роли и/или типу оплаты:
+
+\[
+  \text{ФОТ}_{\text{роль},\,\text{тип}} = \sum \code{accrued_total}
+  \quad\text{где}\quad \code{role} = \text{роль} \;\wedge\; \code{pay_type} = \text{тип}
+\]
+
+\begin{longtable}{@{}p{5.2cm}p{5.5cm}p{4cm}@{}}
+\caption{Колонки ФОТ в \code{realt\_metrics\_by\_month} (все --- частные
+случаи формулы выше; «---» = без фильтра по этому измерению)}
+\label{tab:fot-monthly}\\
+\toprule
+Колонка & Роль (\code{role}) & Тип оплаты (\code{pay_type}) \\
+\midrule
+\endfirsthead
+\toprule
+Колонка & Роль (\code{role}) & Тип оплаты (\code{pay_type}) \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\code{fot_total} & --- (все роли) & --- \\
+\code{fot_total_pct} & --- & Проценты \\
+\code{fot_total_oklad} & --- & Оклад, Бонус \\
+\code{fot_psychiatrists} & ФОТ Психиатры & --- \\
+\code{fot_psychiatrists_pct} & ФОТ Психиатры & Проценты \\
+\code{fot_psychiatrists_oklad} & ФОТ Психиатры & Оклад, Бонус \\
+\code{fot_psychologists} & ФОТ Психологи & --- \\
+\code{fot_psychologists_pct} & ФОТ Психологи & Проценты \\
+\code{fot_psychologists_oklad} & ФОТ Психологи & Оклад, Бонус \\
+\code{fot_administrators} & ФОТ Администраторы & --- \\
+\code{fot_administrators_pct} & ФОТ Администраторы & Проценты \\
+\code{fot_administrators_oklad} & ФОТ Администраторы & Оклад, Бонус \\
+\code{fot_management} & ФОТ Управление & --- \\
+\code{fot_management_pct} & ФОТ Управление & Проценты \\
+\code{fot_management_oklad} & ФОТ Управление & Оклад, Бонус \\
+\code{fot_marketing} & ФОТ Маркетинг & --- \\
+\code{fot_marketing_pct} & ФОТ Маркетинг & Проценты \\
+\code{fot_marketing_oklad} & ФОТ Маркетинг & Оклад, Бонус \\
+\code{fot_shmilovich} & \code{department = 'ШАА'} \newline (не роль, а подразделение!) & --- \\
+\code{fot_shmilovich_pct} & \code{department = 'ШАА'} & Проценты \\
+\code{fot_shmilovich_oklad} & \code{department = 'ШАА'} & Оклад, Бонус \\
+\end{longtable}
+
+\textbf{\code{fot_shmilovich} --- не то же самое, что раньше.} До
+2026-09-17 ключ был \code{role = 'ФОТ Шмилович'} (33 строки, $\approx$22.97\,млн~₽,
+строго сам Шмилович). Сейчас --- \code{department = 'ШАА'} (49 строк,
+$\approx$24.27\,млн~₽): шире, включает ещё администратора/психиатра,
+числящихся в подразделении ШАА. Это меняет ранее показанные клиенту
+цифры «Доля ФОТ в выручке» / «Прибыль после ФОТ» (согласованные
+2026-09-14 по старому ключу) --- упомянуть при следующей сверке.
+
+\subsection{Налоги и доля ФОТ в выручке}
+
+\[
+  \code{fot_taxes} = \sum \code{ndfl} + \sum \code{contributions}
+\]
+
+Значения в источнике обычно \textbf{отрицательные} (это удержания, не
+начисления). \code{fot_taxes_pct} / \code{fot_taxes_oklad} --- то же с
+фильтром по \code{pay_type}, как в таблице~\ref{tab:fot-monthly}.
+
+\[
+  \code{fot_revenue_share} = \frac{\code{fot_total} - \code{fot_shmilovich}}{\code{revenue}} \times 100
+\]
+
+ФОТ подразделения ШАА исключён из \textbf{числителя}, потому что выручка
+Шмиловича/Онегиной \textbf{не входит} в \code{revenue} (текстовое
+исключение, раздел~\ref{sec:base-filters}) --- иначе доля была бы
+искусственно завышена. \code{fot_total} при этом остаётся полным (не
+вычитается из него ШАА нигде, кроме этой формулы).
+
+\subsection{Прибыль после ФОТ (уровень Metabase Model, не VIEW)}
+
+\[
+  \text{Прибыль после ФОТ} = \code{revenue} - \code{fot_total} + \code{fot_taxes}
+\]
+
+\textbf{Это не колонка \code{realt_metrics_by_month}} --- формула
+вычисляется в самой Metabase Model («Модель - Реальт метрики по
+месяцам», id~98, \code{src/metabase_queries/realt_metrics_model.sql}) поверх
+готовых \code{revenue}/\code{fot_total}/\code{fot_taxes} из VIEW. Так как
+\code{fot_taxes} обычно $\le 0$ (удержания), прибавление, а не вычитание
+--- корректно, знак уже заложен в данных.
+
+\section{Категоризация визита и ФОТ по врачу}
+\label{sec:categorized}
+
+Две VIEW-надстройки над \code{klientiks_operations} и \code{realt_payroll}
+--- добавляют \code{employee_id} и \code{role_group} \textbf{на уровне
+конкретного визита/строки зарплаты}, а не только помесячного агрегата.
+Именно отсюда берётся юнит-экономика по конкретному врачу
+(раздел~\ref{sec:doctor-econ}).
+
+\subsection{Ключ сопоставления врач \texorpdfstring{$\leftrightarrow$}{<->} сотрудник}
+
+\[
+  \code{upperUTF8(trim(klientiks_operations.doctor))} = \code{upperUTF8(trim(realt_employees.full_name))}
+\]
+
+Регистронезависимое сравнение по ФИО (\code{upperUTF8}, не \code{upper}
+--- обычный \code{upper()} не работает с кириллицей). На момент внедрения
+(2026-09-17) покрытие --- 100\,\% с учётом регистра; 6 записей остаются с
+разным регистром ФИО в справочнике сотрудников (не критично).
+
+\subsection{\code{role\_group} --- приоритет правил (\code{multiIf})}
+\label{sec:role-group-logic}
+
+\begin{longtable}{@{}cp{4.8cm}p{7.3cm}@{}}
+\caption{Порядок проверки условий в \code{realt\_visits\_categorized}
+(первое совпавшее условие побеждает)}
+\label{tab:role-group}\\
+\toprule
+\# & Условие & Результат (\code{role_group}) \\
+\midrule
+\endfirsthead
+\toprule
+\# & Условие & Результат (\code{role_group}) \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+1 & Врач найден в \code{realt_employees} \textbf{и} его \code{employee_id}
+    встречается в \code{realt_payroll} со строкой \code{department = 'ШАА'}
+  & \textbf{ФОТ ШАА} \\
+2 & Врач найден в \code{realt_employees} \textbf{и} для его
+    \code{employee_id} есть роль в \code{realt_payroll}
+    (\code{argMax(role, period)} --- самая свежая по периоду)
+  & эта роль (ФОТ Психиатры / Психологи / Администраторы / Управление / Маркетинг) \\
+3 & Врач найден в \code{realt_employees}, но \code{employee_id} \textbf{ни разу}
+    не встречается в \code{realt_payroll}
+  & \code{Без ФОТ-кода} (старый/бывший сотрудник вне системы ФОТ --- ожидаемо, не баг) \\
+4 & ФИО из Клиентикс вообще не нашло пару в \code{realt_employees}
+  & \code{Не в справочнике сотрудников} \\
+\end{longtable}
+
+На реальных данных \code{role_group = 'ФОТ ШАА'} сейчас --- Шмилович
+Андрей Аркадьевич, Онегина Елена Юрьевна и их администратор Ерзаулова
+Анастасия (9 admin + 7 psychiatrist строк с \code{department = 'ШАА'} в
+источнике). \code{realt_payroll_categorized} использует ту же логику,
+но проще (сотрудник уже точно определён по \code{employee_id}, ФИО не
+нужно сопоставлять):
+\[
+  \code{role_group} = \begin{cases}
+    \text{ФОТ ШАА}, & \code{employee_id} \in \{\text{сотрудники с } \code{department}='ШАА'\}\\
+    \code{role} \text{ (как есть)}, & \text{иначе}
+  \end{cases}
+\]
+
+\subsection{Чем это отличается от раздела~\ref{sec:base-filters}}
+
+Компания-целиком метрики (\code{realt_metrics_by_month}) исключают
+Шмиловича/Онегину \textbf{по тексту названия услуги}. Здесь --- \textbf{по
+личности врача} (через \code{employee_id}). Второй способ точнее (не
+теряет визиты с обычным названием услуги, не путает чужие визиты по
+совпадению текста), но требует, чтобы врач был найден в
+\code{realt_employees} --- отсюда категории «Без ФОТ-кода» и «Не в
+справочнике сотрудников» в таблице~\ref{tab:role-group}, которых нет в
+старом методе.
+
+\section{Юнит-экономика по врачу и по роли}
+\label{sec:doctor-econ}
+
+\code{realt_doctor_month} (месяц~$\times$~врач) и \code{realt_role_month}
+(месяц~$\times$~роль) --- агрегаты поверх
+\code{realt_visits_categorized}/\code{realt_payroll_categorized}
+(раздел~\ref{sec:categorized}). Формулы идентичны для обеих VIEW,
+отличается только уровень группировки (\code{employee_id} vs
+\code{role_group}):
+
+\[
+  \code{revenue}, \code{visits}, \code{clients}, \code{new_clients}
+  \quad\text{--- те же формулы, что в разделе~\ref{sec:monthly}, но по визитам ЭТОГО врача/роли}
+\]
+\[
+  \code{fot}, \code{fot_pct}, \code{fot_oklad}, \code{fot_taxes}
+  \quad\text{--- те же формулы, что в таблице~\ref{tab:fot-monthly}, по зарплате ЭТОГО врача/роли}
+\]
+\[
+  \code{avg_check} = \frac{\code{revenue}}{\code{visits}}
+  \qquad
+  \code{fot_per_visit} = \frac{\code{fot}}{\code{visits}}
+  \qquad
+  \code{fot_per_client} = \frac{\code{fot}}{\code{clients}}
+\]
+\[
+  \code{profit_after_fot} = \code{revenue} - \code{fot} + \code{fot_taxes}
+\]
+
+\textbf{Ключевое отличие от того, что было раньше} (до 2026-09-17):
+«ФОТ на визит» считался как (ФОТ \emph{всей роли} за месяц) / (визиты
+\emph{всей клиники} за месяц) --- усреднение по больнице, выбрать
+конкретного врача было нельзя. Теперь знаменатель --- визиты именно
+ЭТОГО врача (\code{realt_doctor_month}) или визиты, \emph{принятые
+именно этой ролью} (\code{realt_role_month}), а не визиты всей клиники.
+Так же для \code{fot_per_client} в \code{realt_role_month}:
+\textbf{внимание} --- если клиент в одном месяце был и у психиатра, и у
+психолога, он войдёт в \code{clients} обеих ролей --- это не то же
+самое, что «уникальные клиенты клиники».
+
+Дашборд-карточки «Помесячная юнитка (по врачам, корректная)» (id~183,
+\code{realt_unitka_by_doctor.sql}) и «Врачи (пофамильно)» (id~184,
+\code{realt_doctors_table.sql}) --- те же формулы поверх
+\code{realt_visits_categorized}/\code{realt_payroll_categorized}
+напрямую (не через готовые \code{realt_doctor_month}/\code{realt_role_month}),
+с параметрами дашборда (раздел~\ref{sec:filters}) --- значения при
+фильтрах по умолчанию совпадают с \code{realt_doctor_month}/\code{realt_role_month}.
+«ФОТ на юнит» там --- \code{fot\_per\_visit} или \code{fot\_per\_client} в
+зависимости от параметра «Показатели на» (переключатель Визит/Клиент).
+
+\section{P\&L по группам (\code{realt\_pl\_by\_group\_month})}
+\label{sec:pl}
+
+Объединение (\code{UNION ALL}, не \code{JOIN}) трёх источников ---
+\code{realt_bank_account}, \code{realt_cash}, \code{realt_accruals} --- по
+общей роли колонок (\code{pl_article}, дата операции/начисления, сумма),
+плюс перенесённые из \code{realt_payroll} строки ФОТ Маркетинга и
+Управления (переезжают в свою группу, а не остаются отдельной строкой
+«ФОТ»). Whitelist --- 24 статьи, единый источник для обеих Metabase
+Model, которые раньше дублировали этот список (Model~178 и карточка~179).
+
+\begin{longtable}{@{}p{3.6cm}p{11cm}@{}}
+\caption{Группировка статей в \code{realt\_pl\_by\_group\_month}}
+\label{tab:pl-groups}\\
+\toprule
+Группа & Статьи \\
+\midrule
+\endfirsthead
+\toprule
+Группа & Статьи \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\textbf{Помещение} & Аренда, Ком.\ услуги, Санпэдрежим/охрана труда --- каждая
+  на 2 этаже, 3 этаже и в ШАА (9 статей) \\
+\textbf{Маркетинг} & Телефония/связь/боты, Рекламный бюджет общий,
+  Маркетинговые подрядчики (3 статьи из источников) \newline
+  + \code{ФОТ Маркетинг} = $-\sum \code{accrued_total}$ по \code{role='ФОТ Маркетинг'}
+  \newline
+  + \code{Взносы и НДФЛ ФОТ Маркетинг} = $\sum \code{ndfl} + \sum \code{contributions}$
+  той же роли \\
+\textbf{Административные} & \code{ФОТ Управление} = $-\sum \code{accrued_total}$
+  по \code{role='ФОТ Управление'} \newline
+  + \code{НДФЛ - Управление} и \code{Взносы ФОТ - Управление} той же роли
+  (отдельными строками, не суммой) \newline
+  + 8 статей из источников (Сервисы и подписки, Интернет/телефония/почта,
+  Ремонт/Оборудование/Мебель, Канцелярия, Аутсорс/консалтинг/юристы,
+  Мероприятия/обучение/подарки, Банковские услуги, Прочие админ расходы) \\
+\textbf{Внегрупповые} & Прочие доходы, Проценты по кредитам, Налог на
+  прибыль / УСН, Амортизация --- каждая сама себе «группа», не
+  суммируется ни с чем \\
+\end{longtable}
+
+\textbf{Знаки:} суммы из источников (\code{amount}/\code{accrual_amount})
+--- как в исходном регистре (обычно отрицательные для расходов). Строки
+ФОТ намеренно \textbf{негируются}
+($-\sum \code{accrued_total}$), чтобы попасть в P\&L с тем же знаком,
+что и остальные статьи-расходы; \code{ndfl}/\code{contributions} уже
+отрицательные в источнике, не негируются повторно.
+
+\section{Прочие витрины}
+\label{sec:other-views}
+
+\subsection{\code{realt\_expenses\_by\_month}}
+
+\[
+  \code{amount} = \sum \code{realt_expenses.amount}
+  \qquad
+  \code{amount_ex_shaa} = \sum \code{realt_expenses.amount} \text{ где } \code{is_shaa} = 0
+\]
+
+Группировка --- месяц~$\times$~\code{expense_type} (набор конкретных
+статей 2025~$\ne$~2026, поэтому группируем по типу, не по статье).
+\code{amount_ex_shaa} --- для среза «без Шмиловича», согласованного по
+смыслу с \code{revenue} (раздел~\ref{sec:monthly}), хоть и не тем же
+самым методом exclusion (\code{is_shaa} --- признак статьи расхода,
+проставленный вручную в источнике, а не текстовое/личностное правило).
+
+\subsection{\code{realt\_revenue\_by\_service}}
+
+\[
+  \code{revenue} = \sum \code{amount}
+  \qquad
+  \code{visits} = \text{count}(*)
+  \qquad
+  \code{avg_check} = \frac{\code{revenue}}{\code{visits}}
+\]
+
+Группировка --- месяц~$\times$~\code{service}. Фильтры --- те же базовые
+(раздел~\ref{sec:base-filters}), включая текстовое исключение
+Шмиловича/Онегиной/«тест».
+
+\section{Параметры (фильтры) дашбордов}
+\label{sec:filters}
+
+Общие для дашборда «Помесячная юнитка (по врачам, корректная)» (id~7,
+карточки 183/184) параметры --- не формулы метрик, а то, что сужает
+выборку визитов/зарплат \textbf{до} расчёта метрик из
+разделов~\ref{sec:doctor-econ}.
+
+\begin{longtable}{@{}p{3.3cm}p{4.2cm}p{6.1cm}@{}}
+\caption{Параметры дашборда id~7}
+\label{tab:dash-filters}\\
+\toprule
+Параметр & Значения & Логика \\
+\midrule
+\endfirsthead
+\toprule
+Параметр & Значения & Логика \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+Год & число & \code{toYear(month) = год} \\
+Тип клиента & Все / Первичный / Повторный &
+  По \code{mvisits} = число визитов ЭТОГО \code{card_number} \textbf{в
+  этом же месяце} (\code{count(*) OVER (PARTITION BY card_number, month)}).
+  Первичный --- \code{mvisits = 1}, Повторный --- \code{mvisits >= 2}.
+  \textbf{Не путать} с «Новым клиентом» (раздел~\ref{sec:terms}) --- там
+  речь о первом визите за всю историю, здесь --- про визиты внутри
+  месяца. \\
+Тип врача & Все / Психиатрические / Психологические &
+  Психиатрические = \code{role_group IN ('ФОТ Психиатры', 'ФОТ ШАА')};
+  Психологические = \code{role_group = 'ФОТ Психологи'}. \\
+Учитывать ШАА & Да / Нет &
+  Нет $\Rightarrow$ строки с \code{role_group = 'ФОТ ШАА'} исключаются
+  целиком из выборки (и из визитов, и из зарплаты). \\
+Показатели на & Визит / Клиент &
+  Переключает знаменатель у всех денежных строк дашборда между
+  \code{visits} и \code{clients} (см.\ раздел~\ref{sec:doctor-econ}). \\
+Врач & дропдаун (82 значения) &
+  Сужает выборку до одного \code{employee_id} (через сопоставление по
+  \code{doctor_name}), значения --- из отдельной карточки-справочника
+  (\code{realt_doctors_list.sql}, id~185). \\
+\end{longtable}
+
+\section{Схема соединения таблиц}
+\label{sec:er}
+
+\begin{figure}[p]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  node distance=14mm and 16mm,
+  every node/.style={font=\small},
+  tablebox/.style={draw, rounded corners, align=left, inner sep=6pt, fill=gray!4},
+  tablebox2/.style={tablebox, draw=gray, dashed, fill=gray!2, text=gray!60!black},
+  arr/.style={-{Latex[length=2.5mm]}, thick},
+  arr2/.style={-{Latex[length=2.5mm]}, thick, dashed, gray}
+]
+
+\node[tablebox] (kl) {%
+  \begin{tabular}{@{}l@{}}
+    \textbf{klientiks\_operations}\\
+    \hline
+    card\_number\\
+    doctor\\
+    service\\
+    visit\_start\\
+    amount
+  \end{tabular}%
+};
+
+\node[tablebox, right=of kl] (emp) {%
+  \begin{tabular}{@{}l@{}}
+    \textbf{realt\_employees}\\
+    \hline
+    employee\_id\\
+    full\_name
+  \end{tabular}%
+};
+
+\node[tablebox, right=of emp] (pay) {%
+  \begin{tabular}{@{}l@{}}
+    \textbf{realt\_payroll}\\
+    \hline
+    employee\_id\\
+    period\\
+    role, department\\
+    pay\_type\\
+    accrued\_total\\
+    ndfl, contributions
+  \end{tabular}%
+};
+
+\draw[arr] (kl) -- (emp) node[midway, above, font=\scriptsize] {doctor $\approx$ full\_name (upperUTF8/trim)};
+\draw[arr] (emp) -- (pay) node[midway, above, font=\scriptsize] {employee\_id};
+
+\node[tablebox2, below=of kl] (svc) {%
+  \begin{tabular}{@{}l@{}}
+    \textbf{realt\_service\_categories}\\
+    \hline
+    service\\
+    doctor\_type\\
+    qualification
+  \end{tabular}%
+};
+\draw[arr2] (kl) -- (svc) node[midway, right, font=\scriptsize, text width=3.6cm] {service (ключ есть, но не используется ни в одной VIEW)};
+
+\node[tablebox, below=of svc, xshift=42mm, yshift=-8mm] (exp) {%
+  \begin{tabular}{@{}l@{}}
+    \textbf{realt\_expenses}\\
+    \hline
+    period, article\\
+    expense\_type\\
+    amount, is\_shaa
+  \end{tabular}%
+};
+\node[tablebox, right=of exp] (bank) {%
+  \begin{tabular}{@{}l@{}}
+    \textbf{realt\_bank\_account}\\
+    \hline
+    pl\_article\\
+    accrual\_date /\\
+    \ operation\_date\\
+    amount, accrual\_amount
+  \end{tabular}%
+};
+\node[tablebox, right=of bank] (cash) {%
+  \begin{tabular}{@{}l@{}}
+    \textbf{realt\_cash}\\
+    \hline
+    pl\_article\\
+    accrual\_date /\\
+    \ operation\_date\\
+    amount, accrual\_amount
+  \end{tabular}%
+};
+\node[tablebox, right=of cash] (acc) {%
+  \begin{tabular}{@{}l@{}}
+    \textbf{realt\_accruals}\\
+    \hline
+    pl\_article\\
+    accrual\_date\\
+    amount, accrual\_amount
+  \end{tabular}%
+};
+
+\node[draw=gray, dashed, rounded corners, fit=(exp)(bank)(cash)(acc), inner sep=7mm,
+      label={[gray, font=\scriptsize]above:Источники P\&L --- НЕ джойнятся друг с другом, объединяются UNION ALL по pl\_article (realt\_pl\_by\_group\_month)}] {};
+
+\end{tikzpicture}%
+}
+\caption{Таблицы-источники Реальта и ключи их соединения. Пунктир ---
+связь, которая существует по данным, но пока не задействована ни в
+одной VIEW/карточке (раздел~\ref{sec:sources}).}
+\label{fig:realt-er}
+\end{figure}
+
+\textbf{Как читать:} сплошная стрелка --- реальный \code{JOIN} внутри
+VIEW (раздел~\ref{sec:categorized}), подпись --- условие соединения.
+Пунктирная стрелка --- потенциальный ключ (есть в обеих таблицах), но
+ни одна текущая VIEW/карточка его не использует. Пунктирная рамка внизу
+--- три источника P\&L, которые не связаны JOIN'ом друг с другом вообще:
+каждая строка одного источника не имеет пары в двух других, они просто
+складываются построчно (раздел~\ref{sec:pl}).
+
+Что из чего строится (VIEW $\to$ таблицы-источники) --- сводно:
+
+\begin{itemize}[leftmargin=*]
+\item \code{realt_metrics_by_month} (раздел~\ref{sec:monthly}) ---
+  \code{klientiks_operations} + \code{realt_payroll} (без
+  \code{realt_employees}, категоризация по тексту услуги);
+\item \code{realt_revenue_by_service} --- \code{klientiks_operations};
+\item \code{realt_expenses_by_month} --- \code{realt_expenses};
+\item \code{realt_pl_by_group_month} (раздел~\ref{sec:pl}) ---
+  \code{realt_bank_account} + \code{realt_cash} + \code{realt_accruals} +
+  \code{realt_payroll} (только роли Маркетинг/Управление);
+\item \code{realt_visits_categorized} --- \code{klientiks_operations} +
+  \code{realt_employees} + \code{realt_payroll} (только для определения
+  \code{role_group} --- сами суммы зарплаты не читает);
+\item \code{realt_payroll_categorized} --- \code{realt_payroll} (+
+  подзапрос по нему же для списка ШАА-сотрудников);
+\item \code{realt_doctor_month} / \code{realt_role_month}
+  (раздел~\ref{sec:doctor-econ}) --- \code{realt_visits_categorized} +
+  \code{realt_payroll_categorized} + \code{realt_employees} (для ФИО).
+\end{itemize}
+
+\section{Где что лежит}
+
+\begin{longtable}{@{}p{5cm}p{5.5cm}p{4.5cm}@{}}
+\caption{Соответствие: раздел документа $\to$ файл в репозитории $\to$
+Metabase}
+\label{tab:where}\\
+\toprule
+Раздел & Файл в репозитории & Metabase \\
+\midrule
+\endfirsthead
+\toprule
+Раздел & Файл в репозитории & Metabase \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\ref{sec:monthly} Месячные метрики & \code{schema_realt_metrics_views.sql}
+  (\code{realt_metrics_by_month}) & Модель id~98, дашборд «Ежемесячные
+  метрики» id~8 \\
+\ref{sec:categorized}--\ref{sec:doctor-econ} Юнит-экономика по врачу &
+  \code{schema_realt_metrics_views.sql} (\code{realt_visits_categorized},
+  \code{realt_payroll_categorized}, \code{realt_doctor_month},
+  \code{realt_role_month}); \code{realt_unitka_by_doctor.sql};
+  \code{realt_doctors_table.sql} & Карточки 183/184, дашборд id~7 \\
+\ref{sec:pl} P\&L по группам & \code{schema_realt_metrics_views.sql}
+  (\code{realt_pl_by_group_month}) & Модель id~178, карточка id~179 \\
+\ref{sec:other-views} Расходы / выручка по услугам &
+  \code{schema_realt_metrics_views.sql}
+  (\code{realt_expenses_by_month}, \code{realt_revenue_by_service}) & --- \\
+\end{longtable}
+
+\section{Как поддерживать документ в актуальном состоянии}
+\label{sec:maintain}
+
+\begin{itemize}[leftmargin=*]
+\item Формула метрики изменилась в \code{schema_realt_metrics_views.sql}
+  или в одной из карточек \code{src/metabase_queries/realt_*.sql} ---
+  поправить соответствующий раздел этого файла \textbf{тем же коммитом}.
+\item Появилась новая метрика/VIEW --- добавить раздел по образцу уже
+  существующих (формула + таблица частных случаев, если их много) и
+  строку в таблицу~\ref{tab:where}.
+\item \code{realt_employees}/\code{realt_service_categories}
+  (раздел~\ref{sec:sources}) --- на момент написания документа код их
+  создания не смёржен в \code{master} (ветки \code{feat/realt-employees},
+  \code{feat/realt-service-categories}), хотя таблицы задеплоены и
+  используются в проде. Смёржить ветки --- отдельная задача, не блокирует
+  актуальность формул здесь (они описывают то, что реально в проде).
+\end{itemize}
+
+\end{document}
