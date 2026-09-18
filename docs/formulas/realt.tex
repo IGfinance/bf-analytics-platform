@@ -24,6 +24,14 @@
 % 11 страниц, 0 ошибок, 0 отсутствующих глифов, ER-диаграмма и все
 % таблицы/формулы проверены визуально (постранично, через PyMuPDF) —
 % не только "компилируется без ошибок", но и "выглядит правильно".
+%
+% 2026-09-19: содержание правилось (переход revenue на department='ШАА'
+% с учётом периода, full_revenue, new_client_revenue[_shaa],
+% new_client_visits_3m[_avg], новый раздел про "За год" для ratio-метрик)
+% в среде БЕЗ LaTeX-движка (tectonic/xelatex недоступны) — визуальная
+% проверка сборкой НЕ переделана. Перед тем как считать документ
+% актуальным для клиента — пересобрать и визуально проверить (см. команду
+% выше), особенно новые формулы и обновлённый раздел 4.
 % Единственное, что стоит перепроверить при заметной правке текста —
 % длинные \texttt{\seqsplit{...}}-идентификаторы (SQL/ClickHouse-имена
 % без пробелов) при необходимости переносятся посимвольно без дефиса;
@@ -168,8 +176,13 @@
 \section{Базовые фильтры видимости визита}
 \label{sec:base-filters}
 
-Применяются в \texttt{\seqsplit{realt\_metrics\_by\_month}} (раздел~\ref{sec:monthly}) при
-чтении \texttt{\seqsplit{klientiks\_operations}}:
+\textbf{Изменено 2026-09-19} --- раньше этот раздел описывал текстовое
+исключение Шмиловича/Онегиной прямо в \texttt{\seqsplit{realt\_metrics\_by\_month}}. Теперь
+компания-целиком метрики (раздел~\ref{sec:monthly}) читают визиты \textbf{не
+напрямую} из \texttt{\seqsplit{klientiks\_operations}}, а через
+\texttt{\seqsplit{realt\_visits\_categorized}} (раздел~\ref{sec:categorized}) --- ту же VIEW,
+которой уже пользовалась юнит-экономика по врачу. Базовые фильтры теперь
+живут \textbf{там}:
 
 \begin{itemize}[leftmargin=*]
 \item \code{amount > 0} --- нулевые/отрицательные суммы не считаются
@@ -178,34 +191,59 @@
 \item \code{card_number != ''};
 \item \code{positionCaseInsensitiveUTF8(doctor, 'тест') = 0} --- исполнитель
   «тест» исключён;
-\item \code{positionCaseInsensitiveUTF8(service, 'шмил') = 0} и то же для
-  \texttt{\seqsplit{'онег'}} --- визиты, где в НАЗВАНИИ УСЛУГИ встречается «шмил»/«онег»,
-  исключены из выручки компании целиком.
+\item \code{role_group != 'ФОТ ШАА'} --- визиты сотрудников подразделения
+  ШАА исключены из выручки/визитов/клиентов компании целиком.
 \end{itemize}
 
-\textbf{Это устаревший, текстовый способ исключить Шмиловича/Онегину} ---
-работает только на уровне выручки \texttt{\seqsplit{realt\_metrics\_by\_month}} (раздел~\ref{sec:monthly}).
-У него два известных изъяна: визит Шмиловича с обычным названием услуги
-не исключается (просачивается в общую выручку), а чужой визит с их именем
-в составном названии услуги --- наоборот, ложно исключается. На реальных
-данных расхождение --- около 2.46\,млн~руб. / 313 визитов. Раздел~\ref{sec:categorized}
-описывает более точный, личностный способ (по \texttt{\seqsplit{employee\_id}}),
-которым считается юнит-экономика по врачу (раздел~\ref{sec:doctor-econ}) ---
-эти две логики \textbf{сознательно разные}, компания-целиком метрики
-(раздел~\ref{sec:monthly}) на новую логику пока не переведены (см.\
-раздел~\ref{sec:maintain}).
+\textbf{Исключение ШАА теперь личностное, не текстовое} (до 2026-09-19
+было \code{positionCaseInsensitiveUTF8(service, 'шмил'/'онег') = 0} --- по
+названию услуги). Раздел~\ref{sec:categorized} описывает, как именно
+\texttt{\seqsplit{role\_group}} определяется по \texttt{\seqsplit{employee\_id}} --- \textbf{эта же логика
+теперь используется и здесь, и в юнит-экономике по врачу
+(раздел~\ref{sec:doctor-econ}), метод уже не «сознательно разный», как
+было раньше} (см.\ также раздел~\ref{sec:categorized-diff}).
+
+\textbf{Почему поменяли (найдено при сверке с клиентской отчётностью,
+2026-09-19):} у текстового способа было два изъяна --- визит Шмиловича с
+обычным названием услуги не исключался, а чужой визит с его именем в
+составном названии услуги, наоборот, ложно исключался (расхождение на
+реальных данных --- около 2.46\,млн~руб. / 313 визитов). Но личностный
+способ в его \emph{первой} версии (2026-09-17, \code{DISTINCT employee_id
+FROM realt_payroll WHERE department = 'ШАА'}, без учёта периода) оказался
+\textbf{тоже неверным} для сотрудников, у которых \code{department}
+менялся во времени: Онегина Елена Юрьевна была в отделе «3 этаж»
+(роль «ФОТ Психиатры») по март 2026 включительно и переведена в ШАА
+только с апреля 2026 --- старый запрос относил к ШАА \emph{весь} её стаж
+задним числом, занижая выручку компании за январь--март 2026 ровно на её
+выручку за эти месяцы (561\,000 / 510\,500 / 347\,000~руб. --- сверено с
+клиентской таблицей до рубля). Исправлено на привязку \code{department} к
+\textbf{конкретному месяцу} периода ФОТ (\code{JOIN} по
+\texttt{\seqsplit{employee\_id}} + месяц, не просто \texttt{\seqsplit{employee\_id}}) --- см.\
+\texttt{\seqsplit{payroll\_period}} в \texttt{\seqsplit{realt\_visits\_categorized}}
+(раздел~\ref{sec:categorized}).
 
 \section{Месячные метрики компании (\texttt{realt\_metrics\_by\_month})}
 \label{sec:monthly}
 
 VIEW: одна строка = один месяц (\texttt{\seqsplit{month}}, заякорен на 12:00 --- иначе
 Report Timezone Metabase сдвигает 1-е число на конец предыдущего месяца).
-Строится \code{FULL OUTER JOIN} двух агрегатов --- визитов и ФОТ по
-месяцу --- сознательно не \code{LEFT JOIN}, иначе месяц, где ФОТ уже
-загружен, а визитов в Клиентикс ещё нет (например, текущий месяц), молча
-пропадает из VIEW целиком (это был баг, исправленный 2026-09-17).
+Строится \code{FULL OUTER JOIN} нескольких агрегатов по месяцу --- визиты
+без ШАА, ФОТ, полная выручка (все визиты), визиты ШАА, скользящая
+когорта (см.\ ниже) --- сознательно не \code{LEFT JOIN} с визитов,
+иначе месяц, где ФОТ уже загружен, а визитов в Клиентикс ещё нет
+(например, текущий месяц), молча пропадает из VIEW целиком (это был баг,
+исправленный 2026-09-17).
 
 \subsection{Выручка, визиты, клиенты}
+
+Источник --- \texttt{\seqsplit{realt\_visits\_categorized}} (раздел~\ref{sec:categorized})
+\textbf{с фильтром} \code{role_group != 'ФОТ ШАА'} (см.\
+раздел~\ref{sec:base-filters}). \texttt{\seqsplit{visit\_seq}} здесь --- ПЕРЕСЧИТАННЫЙ
+номер визита клиента \emph{после} исключения ШАА (\code{row_number()} по
+уже отфильтрованному набору), а не общий \texttt{\seqsplit{visit\_seq}} из
+\texttt{\seqsplit{realt\_visits\_categorized}} --- так «новый клиент» по-прежнему значит
+«первый визит к клинике без учёта ШАА», а не «первый визит вообще
+куда-либо, включая ШАА»:
 
 \[
   \texttt{\seqsplit{revenue}} = \sum \texttt{\seqsplit{amount}}
@@ -222,7 +260,68 @@ Report Timezone Metabase сдвигает 1-е число на конец пре
 
 По визитам месяца, прошедшим базовые фильтры (раздел~\ref{sec:base-filters}).
 \texttt{\seqsplit{new\_clients}} --- см.\ определение «Новый клиент» в
-таблице терминов, раздел~\ref{sec:terms}.
+таблице терминов, раздел~\ref{sec:terms}. \texttt{\seqsplit{avg\_check}} ---
+\textbf{ratio-колонка}, см.\ раздел~\ref{sec:ratio-yearly} про то, почему
+её нельзя суммировать по месяцам для годового итога.
+
+\subsection{Полная выручка, ШАА и выручка с первого визита (добавлено 2026-09-19)}
+\label{sec:new-revenue-cols}
+
+\[
+  \texttt{\seqsplit{full\_revenue}} = \sum \texttt{\seqsplit{amount}} \text{ по ВСЕМ визитам месяца (}\texttt{\seqsplit{realt\_visits\_categorized}}\text{, БЕЗ фильтра по } \texttt{\seqsplit{role\_group}}\text{)}
+\]
+
+Единственная колонка этой VIEW, где ШАА \textbf{не} исключается ---
+«полная выручка компании», по просьбе клиента, для сравнения с
+\texttt{\seqsplit{revenue}} (без ШАА).
+
+\[
+  \texttt{\seqsplit{new\_client\_revenue}} = \sum \texttt{\seqsplit{amount}} \text{ где } \texttt{\seqsplit{visit\_seq}} = 1
+  \qquad\text{(тот же }\texttt{\seqsplit{visit\_seq}}\text{, что и у }\texttt{\seqsplit{new\_clients}}\text{, без ШАА)}
+\]
+
+Выручка \textbf{именно} за первый визит новых клиентов месяца (не вся их
+последующая выручка). До 2026-09-19 называлась «Выручка с первых
+визитов» --- переименована в Metabase в «Выручка с 1 визита», формула не
+менялась.
+
+\[
+  \texttt{\seqsplit{new\_clients\_shaa}} = \text{uniqExactIf}(\texttt{\seqsplit{card\_number}},\; \texttt{\seqsplit{visit\_seq}}_{\text{ШАА}} = 1)
+  \qquad
+  \texttt{\seqsplit{new\_client\_revenue\_shaa}} = \sum \texttt{\seqsplit{amount}} \text{ где } \texttt{\seqsplit{visit\_seq}}_{\text{ШАА}} = 1
+\]
+
+Те же формулы, что \texttt{\seqsplit{new\_clients}}/\allowbreak\texttt{\seqsplit{new\_client\_revenue}}, но
+для визитов ШАА (\code{role_group = 'ФОТ ШАА'}) и с СОБСТВЕННОЙ
+последовательностью \texttt{\seqsplit{visit\_seq}}$_{\text{ШАА}}$, посчитанной только по
+визитам ШАА (\texttt{\seqsplit{shaa\_visits\_seq}} в VIEW). \textbf{Независимая когорта} от
+\texttt{\seqsplit{new\_clients}}: клиент мог годами наблюдаться в клинике и прийти к ШАА
+впервые (войдёт в \texttt{\seqsplit{new\_clients\_shaa}}, но не в \texttt{\seqsplit{new\_clients}}), и
+наоборот (новый в клинике, но не был у ШАА).
+
+\subsection{Визиты новых клиентов за скользящий квартал (добавлено 2026-09-19)}
+\label{sec:rolling-visits}
+
+Когорта --- «Новые клиенты» месяца $M$ (раздел выше, БЕЗ ШАА). Для
+каждого такого клиента считаем ВСЕ его визиты (тоже без ШАА), которые
+попали в 3-месячное \textbf{скользящее} окно $[M \dots M{+}2]$ включительно
+(месяц привлечения и два следующих) --- \textbf{не} выравнивание по
+календарным кварталам: клиент, пришедший в феврале, считается за
+февраль--март--апрель, а не за Q1/Q2.
+
+\[
+  \texttt{\seqsplit{new\_client\_visits\_3m}} = \sum_{\text{клиенты, привлечённые в } M} \big(\text{их визиты в } [M \dots M{+}2]\big)
+\]
+\[
+  \texttt{\seqsplit{new\_client\_visits\_3m\_avg}} = \frac{\texttt{\seqsplit{new\_client\_visits\_3m}}}{\texttt{\seqsplit{new\_clients}}}
+\]
+
+\textbf{Важно про свежие месяцы:} для последних 1--2 загруженных месяцев
+окно уходит за пределы того, что уже есть в базе (например, для когорты
+июля 2026 нужны визиты августа и сентября, которых ещё нет) --- значение
+занижено \emph{технически}, это не падение активности новых клиентов.
+\texttt{\seqsplit{new\_client\_visits\_3m\_avg}} --- \textbf{ratio-колонка}, см.\
+раздел~\ref{sec:ratio-yearly}.
 
 \subsection{ФОТ по ролям и типу оплаты}
 
@@ -314,6 +413,55 @@ $\approx$24.27\,млн~руб.): шире, включает ещё админи�
 \texttt{\seqsplit{fot\_taxes}} обычно $\le 0$ (удержания), прибавление, а не вычитание
 --- корректно, знак уже заложен в данных.
 
+\subsection{«За год» для ratio-метрик --- считается НЕ в VIEW (добавлено 2026-09-19)}
+\label{sec:ratio-yearly}
+
+\texttt{\seqsplit{realt\_metrics\_by\_month}} --- помесячная VIEW, у неё вообще нет
+годового грейна: колонки вроде \texttt{\seqsplit{avg\_check}} или
+\texttt{\seqsplit{new\_client\_visits\_3m\_avg}} --- это отношения (\emph{ratio}), посчитанные
+\textbf{для каждого месяца отдельно}. Годовой итог такой колонки --- НЕ
+сумма и не среднее из 12 месячных значений:
+
+\[
+  \underbrace{\sum_{m=1}^{12} \texttt{\seqsplit{avg\_check}}_m}_{\text{неверно --- сумма 12 разных средних}}
+  \quad\ne\quad
+  \underbrace{\frac{\sum_{m=1}^{12} \texttt{\seqsplit{revenue}}_m}{\sum_{m=1}^{12} \texttt{\seqsplit{visits}}_m}}_{\text{верно --- средний чек за весь год}}
+\]
+
+На реальных данных 2026 года левая часть --- около 66\,812 (сумма семи
+доступных месячных средних), правая --- 9\,540 (реальный средний чек за
+период) --- разница на порядок, не округление.
+
+\textbf{Где действительно считается верная годовая формула:} только в
+дашборд-карточке «Таблица - Реальт - Ежемесячные метрики» (id~186,
+\texttt{\seqsplit{src/ metabase\_queries/ realt\_monthly\_metrics.sql}}) --- она вручную
+строит столбец «За год» отдельной формулой для каждой ratio-строки
+(\code{sum(Выручка)/sum(Визиты)} для среднего чека,
+\code{sum(new_client_visits_3m)/sum(new_clients)} для визитов на нового
+клиента), а не переиспользует \texttt{\seqsplit{sumIf}} по месяцам, как для
+аддитивных метрик (Выручка, Визиты, Новые клиенты и т.д.). \textbf{В самой
+ClickHouse VIEW такой годовой агрегации нет вообще} --- если понадобится
+годовое значение где-то ещё (например, боту, который не пойдёт в эту
+конкретную Metabase-карточку, а прочитает VIEW напрямую), формулу нужно
+повторить \emph{осознанно}, а не через \code{avg()}/\code{sum()} по
+\texttt{\seqsplit{month}}.
+
+Колонки-ratio в этой VIEW на 2026-09-19: \texttt{\seqsplit{avg\_check}},
+\texttt{\seqsplit{new\_client\_visits\_3m\_avg}}, \texttt{\seqsplit{fot\_revenue\_share}} (раздел выше ---
+хоть она и не выведена в карточку 186, тот же принцип применим, если её
+туда добавят). У каждой такой колонки \code{COMMENT COLUMN} в
+\texttt{\seqsplit{schema\_realt\_metrics\_views.sql}} явно предупреждает об этом же
+(см.\ \code{architecture-standarts.md} $\to$ «Семантический слой для
+AI-бота» --- то же требование для бота, читающего \texttt{\seqsplit{system.columns}}
+в обход этого документа).
+
+\textbf{Это же причина, по которой карточка 186 --- Таблица, а не
+Визуал/MBQL-пивот}, и осознанное исключение из правила «на дашборд ---
+только Визуалы» (\code{architecture-standarts.md}): MBQL-пивот считает
+столбец «Итого» ТОЙ ЖЕ агрегацией, что и ячейки (\code{sum}), у него нет
+способа посчитать для одной строки-метрики \code{sum}, а для другой ---
+\code{sum/sum}.
+
 \section{Категоризация визита и ФОТ по врачу}
 \label{sec:categorized}
 
@@ -351,43 +499,66 @@ $\approx$24.27\,млн~руб.): шире, включает ещё админи�
 \endhead
 \bottomrule
 \endfoot
-1 & Врач найден в \texttt{\seqsplit{realt\_employees}} \textbf{и} его \texttt{\seqsplit{employee\_id}}
-    встречается в \texttt{\seqsplit{realt\_payroll}} со строкой \code{department = 'ШАА'}
+1 & Врач найден в \texttt{\seqsplit{realt\_employees}} \textbf{и} за МЕСЯЦ ЭТОГО ВИЗИТА
+    (не когда-либо) у его \texttt{\seqsplit{employee\_id}} есть хотя бы одна строка
+    \texttt{\seqsplit{realt\_payroll}} с \code{department = 'ШАА'} (\code{max(department =
+    'ШАА')} по строкам месяца --- см.\ оговорку про Ерзаулову ниже)
   & \textbf{ФОТ ШАА} \\
 2 & Врач найден в \texttt{\seqsplit{realt\_employees}} \textbf{и} для его
-    \texttt{\seqsplit{employee\_id}} есть роль в \texttt{\seqsplit{realt\_payroll}}
-    (\code{argMax(role, period)} --- самая свежая по периоду)
+    \texttt{\seqsplit{employee\_id}} есть строка \texttt{\seqsplit{realt\_payroll}} ЗА ТОТ ЖЕ МЕСЯЦ
+    (\code{argMax(role, period)} внутри месяца, если строк несколько)
   & эта роль (ФОТ Психиатры / Психологи / Администраторы / Управление / Маркетинг) \\
 3 & Врач найден в \texttt{\seqsplit{realt\_employees}}, но \texttt{\seqsplit{employee\_id}} \textbf{ни разу}
-    не встречается в \texttt{\seqsplit{realt\_payroll}}
-  & \code{Без ФОТ-кода} (старый/бывший сотрудник вне системы ФОТ --- ожидаемо, не баг) \\
+    не встречается в \texttt{\seqsplit{realt\_payroll}} ЗА МЕСЯЦ ЭТОГО ВИЗИТА (в т.ч. если
+    вообще нет ни одной строки ФОТ за этот месяц --- напр. текущий месяц
+    до того, как ФОТ загружен)
+  & \code{Без ФОТ-кода} (старый/бывший сотрудник вне системы ФОТ, либо ФОТ
+    месяца ещё не загружен --- ожидаемо, не баг) \\
 4 & ФИО из Клиентикс вообще не нашло пару в \texttt{\seqsplit{realt\_employees}}
   & \code{Не в справочнике сотрудников} \\
 \end{longtable}
 
+\textbf{Изменено 2026-09-19 --- привязка к месяцу, а не «когда-либо».}
+Первая версия (2026-09-17) брала \code{DISTINCT employee_id FROM
+realt_payroll WHERE department = 'ШАА'} \textbf{без учёта периода} --- то
+есть если сотрудник хоть раз был в ШАА, к ШАА относился весь его стаж,
+включая визиты ДО перевода. На реальных данных это ошибочно отнесло к ШАА
+январь--март 2026 Онегиной Е.Ю. (тогда --- «3 этаж», роль «ФОТ
+Психиатры»; в ШАА --- только с апреля 2026), см.\
+раздел~\ref{sec:base-filters}. Один сотрудник может иметь \textbf{несколько
+строк ФОТ за один месяц с разным \texttt{\seqsplit{department}}} (например,
+администратор Ерзаулова --- частичная занятость и на этаже, и в ШАА) ---
+месяц считается «ШАА», если ШАА встретилась хотя бы в одной его строке
+ФОТ этого месяца.
+
 На реальных данных \code{role_group = 'ФОТ ШАА'} сейчас --- Шмилович
-Андрей Аркадьевич, Онегина Елена Юрьевна и их администратор Ерзаулова
-Анастасия (9 admin + 7 psychiatrist строк с \code{department = 'ШАА'} в
-источнике). \texttt{\seqsplit{realt\_payroll\_categorized}} использует ту же логику,
-но проще (сотрудник уже точно определён по \texttt{\seqsplit{employee\_id}}, ФИО не
-нужно сопоставлять):
+Андрей Аркадьевич (ШАА весь период), Онегина Елена Юрьевна (ШАА только с
+апреля 2026) и их администратор Ерзаулова Анастасия (частичная занятость
+в ШАА каждый месяц). \texttt{\seqsplit{realt\_payroll\_categorized}} использует ту же
+логику, но ещё проще --- \texttt{\seqsplit{department}} уже есть в каждой строке
+\texttt{\seqsplit{realt\_payroll}} за её собственный период, доп.\ \texttt{\seqsplit{JOIN}} не нужен:
 \[
   \texttt{\seqsplit{role\_group}} = \begin{cases}
-    \text{ФОТ ШАА}, & \texttt{\seqsplit{employee\_id}} \in \{\text{сотрудники с } \texttt{\seqsplit{department}}\text{='ШАА'}\}\\
+    \text{ФОТ ШАА}, & \texttt{\seqsplit{department}} = \text{'ШАА'}\ (\text{этой же строки})\\
     \texttt{\seqsplit{role}} \text{ (как есть)}, & \text{иначе}
   \end{cases}
 \]
 
 \subsection{Чем это отличается от раздела~\ref{sec:base-filters}}
+\label{sec:categorized-diff}
 
-Компания-целиком метрики (\texttt{\seqsplit{realt\_metrics\_by\_month}}) исключают
-Шмиловича/Онегину \textbf{по тексту названия услуги}. Здесь --- \textbf{по
-личности врача} (через \texttt{\seqsplit{employee\_id}}). Второй способ точнее (не
-теряет визиты с обычным названием услуги, не путает чужие визиты по
-совпадению текста), но требует, чтобы врач был найден в
-\texttt{\seqsplit{realt\_employees}} --- отсюда категории «Без ФОТ-кода» и «Не в
-справочнике сотрудников» в таблице~\ref{tab:role-group}, которых нет в
-старом методе.
+\textbf{Изменено 2026-09-19 --- больше не отличается.} До этой даты
+компания-целиком метрики (\texttt{\seqsplit{realt\_metrics\_by\_month}}) исключали
+Шмиловича/Онегину \textbf{по тексту названия услуги}, а здесь --- \textbf{по
+личности врача} (через \texttt{\seqsplit{employee\_id}}). С 2026-09-19
+\texttt{\seqsplit{realt\_metrics\_by\_month}} тоже читает визиты через
+\texttt{\seqsplit{realt\_visits\_categorized}} и исключает по \code{role_group != 'ФОТ
+ШАА'} --- \textbf{тот же личностный способ}, что и здесь, единый ключ для
+выручки компании и для юнит-экономики по врачу. Требование --- чтобы врач
+был найден в \texttt{\seqsplit{realt\_employees}}, иначе визит попадёт в категорию
+«Без ФОТ-кода» или «Не в справочнике сотрудников» (таблица~\ref{tab:role-group})
+--- эти визиты \textbf{не исключаются} из выручки компании (только ШАА
+исключается), просто не участвуют в разбивке по ролям.
 
 \section{Юнит-экономика по врачу и по роли}
 \label{sec:doctor-econ}
@@ -691,22 +862,34 @@ VIEW (раздел~\ref{sec:categorized}), подпись --- условие с�
 
 \begin{itemize}[leftmargin=*]
 \item \texttt{\seqsplit{realt\_metrics\_by\_month}} (раздел~\ref{sec:monthly}) ---
-  \texttt{\seqsplit{klientiks\_operations}} + \texttt{\seqsplit{realt\_payroll}} (без
-  \texttt{\seqsplit{realt\_employees}}, категоризация по тексту услуги);
-\item \texttt{\seqsplit{realt\_revenue\_by\_service}} --- \texttt{\seqsplit{klientiks\_operations}};
+  \textbf{с 2026-09-19}: \texttt{\seqsplit{realt\_visits\_categorized}} (визиты, категоризация
+  по \texttt{\seqsplit{role\_group}}, личностно) + \texttt{\seqsplit{realt\_payroll}} (ФОТ); раньше ---
+  \texttt{\seqsplit{klientiks\_operations}} напрямую + \texttt{\seqsplit{realt\_payroll}}, категоризация
+  по тексту услуги (см.\ раздел~\ref{sec:base-filters});
+\item \texttt{\seqsplit{realt\_revenue\_by\_service}} --- \texttt{\seqsplit{klientiks\_operations}}
+  (\textbf{всё ещё} по тексту услуги, не переведена на
+  \texttt{\seqsplit{realt\_visits\_categorized}} --- см.\ раздел~\ref{sec:other-views});
 \item \texttt{\seqsplit{realt\_expenses\_by\_month}} --- \texttt{\seqsplit{realt\_expenses}};
 \item \texttt{\seqsplit{realt\_pl\_by\_group\_month}} (раздел~\ref{sec:pl}) ---
   \texttt{\seqsplit{realt\_bank\_account}} + \texttt{\seqsplit{realt\_cash}} + \texttt{\seqsplit{realt\_accruals}} +
   \texttt{\seqsplit{realt\_payroll}} (только роли Маркетинг/Управление);
 \item \texttt{\seqsplit{realt\_visits\_categorized}} --- \texttt{\seqsplit{klientiks\_operations}} +
   \texttt{\seqsplit{realt\_employees}} + \texttt{\seqsplit{realt\_payroll}} (только для определения
-  \texttt{\seqsplit{role\_group}} --- сами суммы зарплаты не читает);
-\item \texttt{\seqsplit{realt\_payroll\_categorized}} --- \texttt{\seqsplit{realt\_payroll}} (+
-  подзапрос по нему же для списка ШАА-сотрудников);
+  \texttt{\seqsplit{role\_group}}, ПО МЕСЯЦУ визита --- см.\ раздел~\ref{sec:categorized} ---
+  сами суммы зарплаты не читает);
+\item \texttt{\seqsplit{realt\_payroll\_categorized}} --- только \texttt{\seqsplit{realt\_payroll}} (с
+  2026-09-19 без доп.\ подзапроса --- \texttt{\seqsplit{department}} уже есть в своей же
+  строке);
 \item \texttt{\seqsplit{realt\_doctor\_month}} / \texttt{\seqsplit{realt\_role\_month}}
   (раздел~\ref{sec:doctor-econ}) --- \texttt{\seqsplit{realt\_visits\_categorized}} +
   \texttt{\seqsplit{realt\_payroll\_categorized}} + \texttt{\seqsplit{realt\_employees}} (для ФИО).
 \end{itemize}
+
+\textit{Диаграмма выше (рис.~\ref{fig:realt-er}) отражает состояние на
+момент её отрисовки (сплошная стрелка klientiks\_operations
+$\to$ realt\_employees $\to$ realt\_payroll) --- сам факт JOIN'а не
+изменился 2026-09-19, изменилось только условие (по месяцу, а не
+\texttt{\seqsplit{employee\_id}} без учёта периода) --- перерисовывать не требуется.}
 
 \section{Где что лежит}
 
@@ -725,9 +908,13 @@ Metabase}
 \endhead
 \bottomrule
 \endfoot
-\ref{sec:monthly} Месячные метрики & \texttt{\seqsplit{schema\_realt\_metrics\_views.sql}}
-  (\texttt{\seqsplit{realt\_metrics\_by\_month}}) & Модель id~98, дашборд «Ежемесячные
-  метрики» id~8 \\
+\ref{sec:monthly}--\ref{sec:ratio-yearly} Месячные метрики,
+  полная\,/\,ШАА\,/\,скользящая выручка, «За год» для ratio &
+  \texttt{\seqsplit{schema\_realt\_metrics\_views.sql}}
+  (\texttt{\seqsplit{realt\_metrics\_by\_month}}); \texttt{\seqsplit{realt\_metrics\_model.sql}};
+  \texttt{\seqsplit{realt\_monthly\_metrics.sql}} (формула «За год» для ratio-строк ---
+  только здесь) & Модель id~98, карточка id~186, дашборд «Ежемесячные
+  метрики» id~8 (Таблица, осознанное исключение из правила Визуалов) \\
 \ref{sec:categorized}--\ref{sec:doctor-econ} Юнит-экономика по врачу &
   \texttt{\seqsplit{schema\_realt\_metrics\_views.sql}} (\texttt{\seqsplit{realt\_visits\_categorized}},
   \texttt{\seqsplit{realt\_payroll\_categorized}}, \texttt{\seqsplit{realt\_doctor\_month}},
@@ -751,6 +938,16 @@ Metabase}
 \item Появилась новая метрика/VIEW --- добавить раздел по образцу уже
   существующих (формула + таблица частных случаев, если их много) и
   строку в таблицу~\ref{tab:where}.
+\item \textbf{Новая метрика --- ratio (среднее/доля/X на клиента), не
+  сумма}: (1) явно написать в этом файле, что колонка --- ratio и как
+  считается её корректный годовой/итоговый агрегат (по образцу
+  раздела~\ref{sec:ratio-yearly}); (2) `COMMENT COLUMN` в
+  \texttt{\seqsplit{schema\_realt\_metrics\_views.sql}} должен предупреждать о том же для
+  бота; (3) если карточка-Таблица с такой строкой ложится на дашборд
+  напрямую (не как Визуал) --- это осознанное исключение из правила
+  Metabase-стандартов, отметить в \texttt{\seqsplit{docs/architecture-map.md}} (раздел
+  про Metabase) и в самих `architecture-standarts.md`, если такого
+  прецедента там ещё нет.
 \item \texttt{\seqsplit{realt\_employees}}/\allowbreak\texttt{\seqsplit{realt\_service\_categories}}
   (раздел~\ref{sec:sources}) --- на момент написания документа код их
   создания не смёржен в \texttt{\seqsplit{master}} (ветки \texttt{\seqsplit{feat/realt-employees}},

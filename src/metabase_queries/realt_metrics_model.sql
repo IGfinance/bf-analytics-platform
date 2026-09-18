@@ -30,14 +30,21 @@
 -- "Прибыль после ФОТ" напрямую в Metabase, минуя репозиторий. Приведено в
 -- соответствие с фактическим текстом Model 98 (проверено через API) +
 -- добавлена "Выручка с первых визитов" (new_client_revenue).
+--
+-- 2026-09-19: добавлены full_revenue ("Полная выручка (с ШАА)") и
+-- new_client_revenue_shaa ("Выручка с 1 визита ШАА"); new_client_revenue
+-- переименована из "Выручка с первых визитов" в "Выручка с 1 визита"
+-- (формула не менялась, см. schema_realt_metrics_views.sql).
 
 SELECT
     month                     AS "Месяц",
+    full_revenue              AS "Полная выручка (с ШАА)",
     revenue                   AS "Выручка",
     visits                    AS "Визиты",
     clients                   AS "Клиенты",
     new_clients               AS "Новые клиенты",
-    new_client_revenue        AS "Выручка с первых визитов",
+    new_client_revenue        AS "Выручка с 1 визита",
+    new_client_revenue_shaa   AS "Выручка с 1 визита ШАА",
     avg_check                 AS "Средний чек",
     fot_total                 AS "ФОТ всего",
     fot_psychiatrists         AS "ФОТ Психиатры",
