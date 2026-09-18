@@ -1,3 +1,17 @@
+-- Metabase: native SQL карточки "Таблица - Реальт - Помесячная юнитка (по
+-- врачам, корректная)" (id 183), дашборд id 7.
+-- 2026-09-18: добавлен фильтр doctor_name (''=все врачи, как в
+-- realt_doctors_table.sql) — раньше карточка всегда агрегировала ВСЮ
+-- клинику, выбрать одного врача и увидеть его помесячную динамику было
+-- нельзя (см. вики-сессию 2026-09-17, «Следующие шаги»). При выбранном
+-- враче строки-разбивки по ролям (ФОТ Психиатры/Психологи/…) станут
+-- нулевыми везде, кроме его собственной роли — это ожидаемо, не баг.
+-- ГОЧТЯ (подробности в realt_doctors_table.sql): голая строка-комментарий
+-- "--" без пробела/текста после ломает разбор параметров в ClickHouse
+-- JDBC-драйвере Metabase, даже без единой переменной в самом комментарии
+-- ("Похоже, мы получили больше параметров, чем можем обработать"). После
+-- "--" всегда должен идти пробел или текст, пустых строк-разделителей нет.
+
 WITH
 base AS (
     SELECT
@@ -13,6 +27,7 @@ base AS (
       AND ( {{doctor_type}} = 'Все'
             OR ( {{doctor_type}} = 'Психиатрические' AND v.role_group IN ('ФОТ Психиатры', 'ФОТ ШАА') )
             OR ( {{doctor_type}} = 'Психологические' AND v.role_group = 'ФОТ Психологи' ) )
+      AND ( {{doctor_name}} = '' OR v.doctor_name = {{doctor_name}} )
 ),
 filtered AS (
     SELECT * FROM base
@@ -43,6 +58,9 @@ payroll_f AS (
       AND ( {{doctor_type}} = 'Все'
             OR ( {{doctor_type}} = 'Психиатрические' AND role_group IN ('ФОТ Психиатры', 'ФОТ ШАА') )
             OR ( {{doctor_type}} = 'Психологические' AND role_group = 'ФОТ Психологи' ) )
+      AND ( {{doctor_name}} = '' OR employee_id IN (
+            SELECT employee_id FROM realt_employees WHERE full_name = {{doctor_name}}
+      ) )
     GROUP BY mnum, role_group
 ),
 payroll_pivot AS (
@@ -87,7 +105,7 @@ monthly AS (
         p.taxes_psy AS taxes_psy, p.taxes_pso AS taxes_pso, p.taxes_adm AS taxes_adm,
         p.taxes_upr AS taxes_upr, p.taxes_mkt AS taxes_mkt, p.taxes_shaa AS taxes_shaa,
         (coalesce(p.fot_total_pct,0) + coalesce(p.fot_total_oklad,0)) AS fot_total,
-        -- делитель: клиент или визит, по параметру {{unit}}
+        -- делитель: клиент или визит, по параметру unit
         if({{unit}} = 'Клиент', r.clients, r.visits) AS denom
     FROM monthly_rev r
     FULL OUTER JOIN payroll_pivot p ON r.mnum = p.mnum

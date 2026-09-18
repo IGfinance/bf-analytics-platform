@@ -1,3 +1,20 @@
+-- Metabase: native SQL карточки "Таблица - Реальт - Врачи (пофамильно)"
+-- (id 184), дашборд "Помесячная юнитка (по врачам, корректная)" (id 7).
+-- 2026-09-18: добавлен фильтр doctor_name (текстовая переменная, ''=все
+-- врачи) — дашборд-фильтр «Врач» подключён и сюда, и к помесячному пивоту
+-- (realt_unitka_by_doctor.sql), значения берутся из отдельной карточки
+-- "Таблица - Реальт - Список врачей (справочник фильтра)" (id 185,
+-- DISTINCT doctor_name FROM realt_doctor_month) через
+-- values_source_type=card дашборд-параметра — обновляется сама по мере
+-- появления новых врачей, руками список поддерживать не нужно.
+-- doctor_fot фильтруется по employee_id (в realt_payroll_categorized нет
+-- doctor_name) через подзапрос к realt_employees по совпадению full_name.
+-- ГОЧТЯ (проверено эмпирически 2026-09-18): голая строка-комментарий "--"
+-- без пробела/текста после ломает разбор параметров в ClickHouse
+-- JDBC-драйвере Metabase ("Похоже, мы получили больше параметров, чем
+-- можем обработать") — не связано с содержимым комментария, дело именно
+-- в пустой "--" самой по себе. После "--" всегда должен идти пробел или
+-- текст, пустых строк-разделителей в этом файле больше нет намеренно.
 WITH
 base AS (
     SELECT
@@ -14,6 +31,7 @@ base AS (
       AND ( {{doctor_type}} = 'Все'
             OR ( {{doctor_type}} = 'Психиатрические' AND v.role_group IN ('ФОТ Психиатры', 'ФОТ ШАА') )
             OR ( {{doctor_type}} = 'Психологические' AND v.role_group = 'ФОТ Психологи' ) )
+      AND ( {{doctor_name}} = '' OR v.doctor_name = {{doctor_name}} )
 ),
 filtered AS (
     SELECT * FROM base
@@ -43,6 +61,9 @@ doctor_fot AS (
       AND ( {{doctor_type}} = 'Все'
             OR ( {{doctor_type}} = 'Психиатрические' AND role_group IN ('ФОТ Психиатры', 'ФОТ ШАА') )
             OR ( {{doctor_type}} = 'Психологические' AND role_group = 'ФОТ Психологи' ) )
+      AND ( {{doctor_name}} = '' OR employee_id IN (
+            SELECT employee_id FROM realt_employees WHERE full_name = {{doctor_name}}
+      ) )
     GROUP BY employee_id
 )
 SELECT
