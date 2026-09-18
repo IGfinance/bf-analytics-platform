@@ -24,22 +24,46 @@
 -- ВАЖНО (проверено на WB/Ozon 2026-09-05): Metabase запрещает переменные и
 -- Field Filter в Модели, созданной из native SQL. Фильтры на дашборде — поверх
 -- этой модели через GUI-вопросы, а не native-переменные здесь.
+--
+-- 2026-09-18: файл был не синхронизирован с продом — Илья добавил в саму
+-- Model разбивку ФОТ по pay_type (Оклад+Бонус/Проценты, см. VIEW) и
+-- "Прибыль после ФОТ" напрямую в Metabase, минуя репозиторий. Приведено в
+-- соответствие с фактическим текстом Model 98 (проверено через API) +
+-- добавлена "Выручка с первых визитов" (new_client_revenue).
 
 SELECT
-    month                AS "Месяц",
-    revenue              AS "Выручка",
-    visits               AS "Визиты",
-    clients              AS "Клиенты",
-    new_clients          AS "Новые клиенты",
-    avg_check            AS "Средний чек",
-    fot_total            AS "ФОТ всего",
-    fot_psychiatrists    AS "ФОТ Психиатры",
-    fot_psychologists    AS "ФОТ Психологи",
-    fot_administrators   AS "ФОТ Администраторы",
-    fot_management       AS "ФОТ Управление",
-    fot_marketing        AS "ФОТ Маркетинг",
-    fot_shmilovich       AS "ФОТ Шмилович",
-    fot_taxes            AS "Налоги и взносы с ФОТ",
-    fot_revenue_share    AS "Доля ФОТ в выручке, %"
+    month                     AS "Месяц",
+    revenue                   AS "Выручка",
+    visits                    AS "Визиты",
+    clients                   AS "Клиенты",
+    new_clients               AS "Новые клиенты",
+    new_client_revenue        AS "Выручка с первых визитов",
+    avg_check                 AS "Средний чек",
+    fot_total                 AS "ФОТ всего",
+    fot_psychiatrists         AS "ФОТ Психиатры",
+    fot_psychologists         AS "ФОТ Психологи",
+    fot_administrators        AS "ФОТ Администраторы",
+    fot_management            AS "ФОТ Управление",
+    fot_marketing             AS "ФОТ Маркетинг",
+    fot_shmilovich            AS "ФОТ Шмилович",
+    fot_taxes                 AS "Налоги и взносы с ФОТ",
+    fot_revenue_share         AS "Доля ФОТ в выручке, %",
+    revenue - fot_total + fot_taxes AS "Прибыль после ФОТ",
+    fot_total_pct             AS "ФОТ всего — Проценты",
+    fot_total_oklad           AS "ФОТ всего — Оклад+Бонус",
+    fot_psychiatrists_pct     AS "ФОТ Психиатры — Проценты",
+    fot_psychiatrists_oklad   AS "ФОТ Психиатры — Оклад+Бонус",
+    fot_psychologists_pct     AS "ФОТ Психологи — Проценты",
+    fot_psychologists_oklad   AS "ФОТ Психологи — Оклад+Бонус",
+    fot_administrators_pct    AS "ФОТ Администраторы — Проценты",
+    fot_administrators_oklad  AS "ФОТ Администраторы — Оклад+Бонус",
+    fot_management_pct        AS "ФОТ Управление — Проценты",
+    fot_management_oklad      AS "ФОТ Управление — Оклад+Бонус",
+    fot_marketing_pct         AS "ФОТ Маркетинг — Проценты",
+    fot_marketing_oklad       AS "ФОТ Маркетинг — Оклад+Бонус",
+    fot_shmilovich_pct        AS "ФОТ Шмилович — Проценты",
+    fot_shmilovich_oklad      AS "ФОТ Шмилович — Оклад+Бонус",
+    fot_taxes_pct             AS "Налоги и взносы с ФОТ — Проценты",
+    fot_taxes_oklad           AS "Налоги и взносы с ФОТ — Оклад+Бонус"
 FROM realt_metrics_by_month
 ORDER BY month

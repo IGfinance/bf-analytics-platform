@@ -17,6 +17,13 @@
 -- файле нет ни одной голой строки-комментария "--" без пробела/текста
 -- после — такая строка ломает разбор параметров в ClickHouse
 -- JDBC-драйвере Metabase, даже без переменных в самом комментарии.
+-- 2026-09-18: добавлены строки «Средний чек», «Новые клиенты», «Выручка
+-- с первых визитов» (по просьбе клиента). Для «Средний чек» столбец «За
+-- год» — НЕ sum(avg_check) по месяцам (сумма средних величин была бы
+-- бессмысленной), а sum(Выручка)/sum(Визиты) за год — см. блок ниже.
+-- «Выручка с первых визитов» = new_client_revenue из
+-- realt_metrics_by_month (см. schema_realt_metrics_views.sql) — сумма
+-- amount по визитам с visit_seq=1, та же когорта, что и «Новые клиенты».
 
 SELECT "Метрика","Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек","За год"
 FROM (
@@ -68,6 +75,59 @@ SELECT 3, 'Клиенты',
     sumIf(toFloat64("Клиенты"), toMonth("Месяц")=11),
     sumIf(toFloat64("Клиенты"), toMonth("Месяц")=12),
     sum(toFloat64("Клиенты"))
+FROM {{#98}}
+WHERE toYear("Месяц") = toInt32({{year}})
+UNION ALL
+-- «За год» здесь — НЕ sum(avg_check) по месяцам (это была бы сумма
+-- средних, бессмысленная величина), а выручка за год / визиты за год.
+SELECT 4, 'Средний чек',
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=1),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=2),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=3),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=4),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=5),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=6),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=7),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=8),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=9),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=10),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=11),
+    sumIf(toFloat64("Средний чек"), toMonth("Месяц")=12),
+    sum(toFloat64("Выручка")) / nullIf(sum(toFloat64("Визиты")), 0)
+FROM {{#98}}
+WHERE toYear("Месяц") = toInt32({{year}})
+UNION ALL
+SELECT 5, 'Новые клиенты',
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=1),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=2),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=3),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=4),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=5),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=6),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=7),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=8),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=9),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=10),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=11),
+    sumIf(toFloat64("Новые клиенты"), toMonth("Месяц")=12),
+    sum(toFloat64("Новые клиенты"))
+FROM {{#98}}
+WHERE toYear("Месяц") = toInt32({{year}})
+UNION ALL
+SELECT 6, 'Выручка с первых визитов',
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=1),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=2),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=3),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=4),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=5),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=6),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=7),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=8),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=9),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=10),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=11),
+    sumIf(toFloat64("Выручка с первых визитов"), toMonth("Месяц")=12),
+    sum(toFloat64("Выручка с первых визитов"))
 FROM {{#98}}
 WHERE toYear("Месяц") = toInt32({{year}})
 ) ORDER BY rn

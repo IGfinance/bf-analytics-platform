@@ -70,7 +70,8 @@ klientiks_m AS (
         sum(amount)                              AS revenue,
         count()                                  AS visits,
         uniqExact(card_number)                   AS clients,
-        uniqExactIf(card_number, visit_seq = 1)  AS new_clients
+        uniqExactIf(card_number, visit_seq = 1)  AS new_clients,
+        sumIf(amount, visit_seq = 1)             AS new_client_revenue
     FROM visits
     GROUP BY m
 ),
@@ -111,6 +112,7 @@ SELECT
     k.visits                                         AS visits,
     k.clients                                        AS clients,
     k.new_clients                                    AS new_clients,
+    k.new_client_revenue                             AS new_client_revenue,
     k.revenue / nullIf(k.visits, 0)                  AS avg_check,
     p.fot_total                                      AS fot_total,
     p.fot_total_pct                                  AS fot_total_pct,
@@ -146,6 +148,7 @@ ALTER TABLE realt_metrics_by_month COMMENT COLUMN revenue 'Выручка = SUM(
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN visits 'Количество визитов (строк) месяца после фильтров.';
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN clients 'Уникальные клиенты месяца (по Номеру карты, card_number).';
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN new_clients 'Новые клиенты (когорта): первый визит клиента пришёлся на этот месяц. Считается по вычисленному номеру визита (row_number по card_number), НЕ по колонке «Количество завершённых» — она в выгрузке ненадёжна.';
+ALTER TABLE realt_metrics_by_month COMMENT COLUMN new_client_revenue 'Выручка с первых визитов = SUM(amount) по визитам с visit_seq=1 (тот же visit_seq, что определяет new_clients) — сумма чеков именно за первое посещение новых клиентов месяца, а не вся их последующая выручка.';
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN avg_check 'Средний чек = выручка / визиты.';
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN fot_total 'ФОТ всего за месяц = SUM(«Начислено ИТОГО») по всем ролям (из realt_payroll). ТРЕБУЕТ СВЕРКИ: начислено vs к оплате.';
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN fot_total_pct 'ФОТ всего, только строки с pay_type=«Проценты».';
