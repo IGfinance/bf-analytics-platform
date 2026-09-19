@@ -169,9 +169,10 @@ WITH doctor_key AS (
 payroll_period AS (
     SELECT
         employee_id,
-        toStartOfMonth(period)     AS period_month,
-        max(department = 'ШАА')    AS is_shaa,
-        argMax(role, period)       AS role
+        toStartOfMonth(period)         AS period_month,
+        max(department = 'ШАА')        AS is_shaa,
+        argMax(role, period)           AS role,
+        argMax(department, period)     AS pp_department
     FROM realt_payroll
     WHERE period IS NOT NULL
     GROUP BY employee_id, period_month
@@ -190,6 +191,20 @@ SELECT
         d.employee_id != '', 'Без ФОТ-кода',
         'Не в справочнике сотрудников'
     )                                                          AS role_group,
+    -- 2026-09-19: visit_floor — независимая от role_group ось (найдено при
+    -- сверке P&L с владельцем): department сотрудника В МЕСЯЦЕ ВИЗИТА,
+    -- те же значения, что и в разделе «ФОТ по department» (2 этаж/3
+    -- этаж/ШАА/УК) — на 2 и 3 этаже работают И психиатры, И психологи
+    -- вперемешку, это НЕ то же самое, что «Тип врача». ШАА — и role_group,
+    -- и visit_floor одновременно (пересечение множеств), у остальных
+    -- visit_floor и role_group независимы. Названо НЕ "floor" — это
+    -- зарезервированное имя функции в ClickHouse (математический floor()),
+    -- голая колонка с таким именем ломает запросы к ней.
+    multiIf(
+        d.employee_id != '' AND pp.is_shaa = 1, 'ШАА',
+        d.employee_id != '' AND pp.pp_department IS NOT NULL, pp.pp_department,
+        NULL
+    )                                                          AS visit_floor,
     row_number() OVER (PARTITION BY k.card_number ORDER BY k.visit_start) AS visit_seq
 FROM klientiks_operations k
 LEFT JOIN doctor_key d ON upperUTF8(trim(k.doctor)) = d.name_key
@@ -205,6 +220,7 @@ ALTER TABLE realt_visits_categorized COMMENT COLUMN month 'Начало меся
 ALTER TABLE realt_visits_categorized COMMENT COLUMN employee_id 'Код сотрудника (realt_employees/realt_payroll). NULL — врач не найден в справочнике сотрудников (см. role_group).';
 ALTER TABLE realt_visits_categorized COMMENT COLUMN doctor_name 'ФИО врача — из справочника сотрудников, если найден, иначе как в Клиентикс (doctor).';
 ALTER TABLE realt_visits_categorized COMMENT COLUMN role_group 'Категория: ФОТ Психиатры/Психологи/Администраторы/Управление/Маркетинг/ШАА — по department/role сотрудника В МЕСЯЦЕ ВИЗИТА (не «когда-либо», department может меняться со временем, см. историю 2026-09-19) — либо «Без ФОТ-кода»/«Не в справочнике сотрудников» при неполноте данных (в т.ч. если нет строки ФОТ именно за этот месяц).';
+ALTER TABLE realt_visits_categorized COMMENT COLUMN visit_floor 'Этаж/блок (2 этаж/3 этаж/ШАА) по department сотрудника В МЕСЯЦЕ ВИЗИТА — независимая от role_group ось (добавлено 2026-09-19 для распределения накладных по этажам, см. docs/formulas/realt.tex). NULL — этаж не определён (нет department за этот месяц/сотрудник не найден).';
 ALTER TABLE realt_visits_categorized COMMENT COLUMN visit_seq 'Порядковый номер визита клиента (по card_number, сортировка по дате) — для когорты «новый клиент», visit_seq=1. Считается по ВСЕМ визитам, включая ШАА (realt_metrics_by_month пересчитывает свой собственный seq после исключения ШАА — см. его комментарии).';
 
 
@@ -583,31 +599,83 @@ WITH articles AS (
         'Налог на прибыль / УСН', 'Амортизация'
     ]) AS article
 ),
+-- 2026-09-19: expense_combined получил колонку floor_tag (realt_bank_account/
+-- realt_cash.project, realt_accruals.tag — три РАЗНЫХ поля с одним смыслом:
+-- «этаж/направление внутри Реальта» — 2 этаж/3 этаж/ШАА/АПДШ/Шмилович
+-- личное). Найдено при разборе с владельцем: «АПДШ» (отдельное
+-- направление/юрлицо, не клиника Реальт) и «Шмилович личное» (личные
+-- расходы) утекали в статьи P&L-whitelist наравне с клиникой — например,
+-- «Банковские услуги»/«Аутсорс, консалтинг, юристы»/«Налог на прибыль /
+-- УСН» содержали строки с этими тегами (проверено на проде: ~2.9 млн ₽
+-- АПДШ + ~21 тыс ₽ Шмилович личное за 2026 год только в этих трёх
+-- статьях). ВСЕГДА исключаем оба тега — они не относятся к клинике вообще
+-- (не то же самое, что тумблер «Учитывать ШАА», который относится к
+-- подразделению КЛИНИКИ, просто выделенному в собственный P&L-срез).
+-- ШАА при этом оставляем видимым — is_shaa ниже позволяет consumer'ам
+-- (эта VIEW уже не даёт параметров) агрегировать amount/amount_ex_shaa
+-- по тому же принципу, что и realt_expenses_by_month.amount_ex_shaa.
+--
+-- 2026-09-19 (второй фикс тем же вечером, по объяснению владельца):
+-- realt_bank_account участвует в P&L ТОЛЬКО строками, где accrual_date
+-- заполнена (раньше был fallback на operation_date через coalesce — из-за
+-- него P&L задваивал часть расходов). Смысл: «Начисления» — это и есть
+-- разбивка реальных денежных операций по периодам/суммам; если по строке
+-- Р/с дата начисления не проставлена, эта операция ЕЩЁ БУДЕТ учтена (в
+-- других месяцах/суммах) через отдельные строки realt_accruals —
+-- например, лицензия/подписка на 210->300 тыс ₽ разово в Р/с (без
+-- accrual_date) одновременно даёт 6 строк в Начислениях по 1/6 суммы на
+-- каждый месяц вперёд (проверено на реальных парах: Понамарёв/
+-- «ПрофитПросто», Ваззап, Яндекс 360, СКБ Контур, Клиентикс ERP,
+-- 1С:Фреш, АДВЕРТМЕД/Битрикс — во всех Р/с-сумма делится ровно на N
+-- Начисления-строк по N месяцам). Без этого фильтра сумма считалась и
+-- целиком в Р/с, и ещё раз размазанной в Начислениях.
+--
+-- realt_cash СОЗНАТЕЛЬНО оставлен на старом coalesce(accrual_date,
+-- operation_date) — проверено эмпирически 2026-09-19: у этой таблицы
+-- accrual_date не заполнена НИ РАЗУ (0 из 256 строк за всю историю, не
+-- только 2026 год) — «Наличные» просто не пользуются этой колонкой,
+-- задвоения с realt_accruals для неё не нашли (мелкие валютные списания
+-- типа Pixelcut/Gamma.app/Combot/Freepik — легитимные разовые траты без
+-- пары в Начислениях). Если бы применили то же правило к Наличным, они бы
+-- целиком выпали из P&L: пробовали — сверка с клиентской таблицей стала
+-- ХУЖЕ (март «Телефония, связь, боты» ушёл с верных 73 807 ₽ на заниженные
+-- 61 872 ₽ — ровно на сумму этих мелких трат). realt_accruals по-прежнему
+-- берёт coalesce(accrual_date, operation_date) — эта вкладка по смыслу и
+-- есть источник дат начисления, fallback здесь не создаёт дублей (все
+-- находки сверены с клиентской «Чистой прибылью» 2026-09-19 — см.
+-- docs/formulas/realt.tex).
 expense_combined AS (
     SELECT
-        toStartOfMonth(coalesce(accrual_date, operation_date)) AS month,
+        toStartOfMonth(accrual_date) AS month,
         pl_article AS article,
-        coalesce(accrual_amount, amount_signed) AS amount
+        coalesce(accrual_amount, amount_signed) AS amount,
+        project AS floor_tag
     FROM realt_bank_account
     WHERE pl_article IN (SELECT article FROM articles)
+      AND accrual_date IS NOT NULL
+      AND ( project IS NULL OR project NOT IN ('АПДШ', 'Шмилович личное') )
 
     UNION ALL
 
     SELECT
         toStartOfMonth(coalesce(accrual_date, operation_date)) AS month,
         pl_article AS article,
-        coalesce(accrual_amount, amount) AS amount
+        coalesce(accrual_amount, amount) AS amount,
+        project AS floor_tag
     FROM realt_cash
     WHERE pl_article IN (SELECT article FROM articles)
+      AND ( project IS NULL OR project NOT IN ('АПДШ', 'Шмилович личное') )
 
     UNION ALL
 
     SELECT
         toStartOfMonth(coalesce(accrual_date, operation_date)) AS month,
         pl_article AS article,
-        coalesce(accrual_amount, amount) AS amount
+        coalesce(accrual_amount, amount) AS amount,
+        tag AS floor_tag
     FROM realt_accruals
     WHERE pl_article IN (SELECT article FROM articles)
+      AND ( tag IS NULL OR tag NOT IN ('АПДШ', 'Шмилович личное') )
 ),
 payroll_extra AS (
     SELECT
@@ -622,7 +690,8 @@ payroll_extra AS (
 ),
 rows_unified AS (
     -- Помещение
-    SELECT 'Помещение' AS grp, article AS item, month, amount AS value
+    SELECT 'Помещение' AS grp, article AS item, month, amount AS value,
+           (floor_tag = 'ШАА') AS is_shaa
     FROM expense_combined
     WHERE article IN (
         'Аренда - 2 этаж', 'Ком услуги - 2 этаж', 'Санпэдрежим, охрана труда - 2 этаж',
@@ -632,35 +701,37 @@ rows_unified AS (
 
     UNION ALL
     -- Маркетинг: статьи PL
-    SELECT 'Маркетинг', article, month, amount
+    SELECT 'Маркетинг', article, month, amount, (floor_tag = 'ШАА')
     FROM expense_combined
     WHERE article IN ('Телефония, связь, боты', 'Рекламный бюджет общий', 'Маркетинговые подрядчики')
 
     UNION ALL
-    -- Маркетинг: ФОТ + налоги (переехали из ФОТ-строк)
-    SELECT 'Маркетинг', 'ФОТ Маркетинг', month, fot_amount
+    -- Маркетинг: ФОТ + налоги (переехали из ФОТ-строк) — is_shaa=0, у
+    -- payroll_extra нет department-разреза (см. комментарий к сигнатуре
+    -- этой CTE в разделе поддержки документа)
+    SELECT 'Маркетинг', 'ФОТ Маркетинг', month, fot_amount, 0
     FROM payroll_extra WHERE role = 'ФОТ Маркетинг'
 
     UNION ALL
-    SELECT 'Маркетинг', 'Взносы и НДФЛ ФОТ Маркетинг', month, ndfl_amount + contrib_amount
+    SELECT 'Маркетинг', 'Взносы и НДФЛ ФОТ Маркетинг', month, ndfl_amount + contrib_amount, 0
     FROM payroll_extra WHERE role = 'ФОТ Маркетинг'
 
     UNION ALL
     -- Административные: ФОТ Управление + отдельно НДФЛ и Взносы
-    SELECT 'Административные', 'ФОТ Управление', month, fot_amount
+    SELECT 'Административные', 'ФОТ Управление', month, fot_amount, 0
     FROM payroll_extra WHERE role = 'ФОТ Управление'
 
     UNION ALL
-    SELECT 'Административные', 'НДФЛ - Управление', month, ndfl_amount
+    SELECT 'Административные', 'НДФЛ - Управление', month, ndfl_amount, 0
     FROM payroll_extra WHERE role = 'ФОТ Управление'
 
     UNION ALL
-    SELECT 'Административные', 'Взносы ФОТ - Управление', month, contrib_amount
+    SELECT 'Административные', 'Взносы ФОТ - Управление', month, contrib_amount, 0
     FROM payroll_extra WHERE role = 'ФОТ Управление'
 
     UNION ALL
     -- Административные: остальные статьи PL
-    SELECT 'Административные', article, month, amount
+    SELECT 'Административные', article, month, amount, (floor_tag = 'ШАА')
     FROM expense_combined
     WHERE article IN (
         'Сервисы и подписки', 'Интернет, телефония, почта', 'Ремонт / Оборудование / Мебель',
@@ -670,15 +741,16 @@ rows_unified AS (
 
     UNION ALL
     -- Внегрупповые статьи: группа = сама статья (не объединяются ни во что)
-    SELECT article, article, month, amount
+    SELECT article, article, month, amount, (floor_tag = 'ШАА')
     FROM expense_combined
     WHERE article IN ('Прочие доходы', 'Проценты по кредитам', 'Налог на прибыль / УСН', 'Амортизация')
 )
 SELECT
-    grp                AS group_name,
-    item               AS article,
-    toDateTime(month) + INTERVAL 12 HOUR AS month,
-    sum(value)         AS amount
+    grp                                   AS group_name,
+    item                                  AS article,
+    toDateTime(month) + INTERVAL 12 HOUR  AS month,
+    sum(value)                            AS amount,
+    sumIf(value, NOT is_shaa)             AS amount_ex_shaa
 FROM rows_unified
 WHERE month IS NOT NULL
 GROUP BY grp, item, month
@@ -687,4 +759,5 @@ ORDER BY grp, item, month;
 ALTER TABLE realt_pl_by_group_month COMMENT COLUMN group_name 'Группа P&L: Помещение / Маркетинг / Административные, либо сама статья для внегрупповых строк (Прочие доходы, Проценты по кредитам, Налог на прибыль / УСН, Амортизация).';
 ALTER TABLE realt_pl_by_group_month COMMENT COLUMN article 'Статья расхода (или «ФОТ Маркетинг»/«Взносы и НДФЛ ФОТ Маркетинг»/«ФОТ Управление»/«НДФЛ - Управление»/«Взносы ФОТ - Управление» для строк, пришедших из realt_payroll).';
 ALTER TABLE realt_pl_by_group_month COMMENT COLUMN month 'Начало месяца операции, время 12:00 (см. realt_metrics_by_month.month — против сдвига Report Timezone в Metabase).';
-ALTER TABLE realt_pl_by_group_month COMMENT COLUMN amount 'Сумма за месяц по статье = SUM(amount) из объединения realt_bank_account/realt_cash/realt_accruals (метод начисления, если есть, иначе кассовый), либо -SUM(accrued_total)/НДФЛ+взносы из realt_payroll для строк ФОТ.';
+ALTER TABLE realt_pl_by_group_month COMMENT COLUMN amount 'Сумма за месяц по статье = SUM(amount) из объединения realt_bank_account/realt_cash/realt_accruals (метод начисления, если есть, иначе кассовый), либо -SUM(accrued_total)/НДФЛ+взносы из realt_payroll для строк ФОТ. С 2026-09-19 строки с project/tag IN (АПДШ, Шмилович личное) исключены ВСЕГДА (не клиника) — см. комментарий к expense_combined.';
+ALTER TABLE realt_pl_by_group_month COMMENT COLUMN amount_ex_shaa 'То же без строк с project/tag=«ШАА» (добавлено 2026-09-19, единообразно с realt_expenses_by_month.amount_ex_shaa) — для строк из realt_payroll (ФОТ Маркетинг/Управление) всегда 0 в разрезе ШАА, department-разреза там нет.';
