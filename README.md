@@ -72,6 +72,10 @@ ssh -L 8123:127.0.0.1:8123 root@<host>
 
 ## Использование
 
+`ingest_wb_api.py`/`ingest_ozon_api.py` берут ключ API по имени `--cabinet`
+из JSON вне git (см. `CABINET_API_KEYS_FILE` в `.env.example` и
+`src/cabinet_credentials.py`) — не общий ключ на все кабинеты.
+
 ```bash
 # Загрузка детального отчёта
 python3 src/ingest_wb.py --cabinet "AcmeShop" --files "/path/to/reports/*.xlsx"

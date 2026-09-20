@@ -18,6 +18,8 @@ from datetime import datetime, date
 import clickhouse_connect
 import requests
 
+from cabinet_credentials import get_ozon_credentials
+
 API_URL = "https://api-seller.ozon.ru/v3/finance/transaction/list"
 PAGE_SIZE = 1000
 MAX_RETRIES = 6
@@ -119,8 +121,7 @@ ROW_COLUMNS = [
 
 
 def ingest_period(cabinet: str, date_from: date, date_to: date, log=print) -> dict:
-    client_id = os.environ["OZON_CLIENT"]
-    api_key = os.environ["OZON_API"]
+    client_id, api_key = get_ozon_credentials(cabinet)
 
     rows = [
         operation_to_row(op, cabinet, date_from, date_to)

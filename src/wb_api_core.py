@@ -24,6 +24,8 @@ from datetime import date, datetime
 import clickhouse_connect
 import requests
 
+from cabinet_credentials import get_wb_token
+
 API_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
 PAGE_LIMIT = 100_000
 MAX_RETRIES = 15
@@ -180,7 +182,7 @@ ROW_COLUMNS = (
 
 
 def ingest_period(cabinet: str, date_from: date, date_to: date, log=print) -> dict:
-    token = os.environ["WILDBERRIES_API"]
+    token = get_wb_token(cabinet)
     client = get_client()
 
     total = 0
