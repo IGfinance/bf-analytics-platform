@@ -8,8 +8,6 @@
 --                            (см. блок ниже), ОПРЕДЕЛЕНЫ ПЕРВЫМИ — от них
 --                            зависит realt_metrics_by_month (исключение ШАА);
 --   realt_metrics_by_month   — одна строка = месяц (выручка/визиты/клиенты/ФОТ);
---   realt_revenue_by_service — одна строка = (месяц, услуга): выручка по услугам;
---   realt_expenses_by_month  — «Остальные расходы» (Google-Таблица) по типу статьи помесячно;
 --   realt_pl_by_group_month  — P&L по группам статей из «Расчетного счета»/
 --                              «Наличных»/«Начислений» + ФОТ Маркетинга/Управления.
 --
@@ -526,53 +524,6 @@ ALTER TABLE realt_metrics_by_month COMMENT COLUMN fot_taxes 'Налоги/взн
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN fot_taxes_pct 'Налоги/взносы с ФОТ, pay_type=«Проценты».';
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN fot_taxes_oklad 'Налоги/взносы с ФОТ, pay_type IN («Оклад»,«Бонус»).';
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN fot_revenue_share 'Доля ФОТ/Выручка, % = (fot_total - fot_shmilovich) / revenue * 100. И revenue, и fot_shmilovich теперь исключают ШАА по одному и тому же ключу (department=«ШАА»), fot_total при этом остаётся полным.';
-
-
-CREATE VIEW IF NOT EXISTS realt_revenue_by_service AS
-SELECT
-    toDateTime(toStartOfMonth(visit_start)) + INTERVAL 12 HOUR AS month,
-    service                                                     AS service,
-    sum(amount)                                                 AS revenue,
-    count()                                                     AS visits,
-    sum(amount) / nullIf(count(), 0)                            AS avg_check
-FROM klientiks_operations
-WHERE amount > 0
-  AND visit_start IS NOT NULL
-  AND positionCaseInsensitiveUTF8(service, 'шмил') = 0
-  AND positionCaseInsensitiveUTF8(service, 'онег') = 0
-  AND positionCaseInsensitiveUTF8(doctor, 'тест') = 0
-GROUP BY month, service
-ORDER BY month, revenue DESC;
-
-ALTER TABLE realt_revenue_by_service COMMENT COLUMN month 'Начало месяца визита, время 12:00 (см. realt_metrics_by_month.month).';
-ALTER TABLE realt_revenue_by_service COMMENT COLUMN service 'Название услуги (как в Клиентикс).';
-ALTER TABLE realt_revenue_by_service COMMENT COLUMN revenue 'Выручка по услуге за месяц = SUM(amount). ВНИМАНИЕ: исключение ШАА здесь ВСЁ ЕЩЁ текстовое (service содержит «шмил»/«онег») — НЕ переведено на department=«ШАА», в отличие от realt_metrics_by_month (см. историю 2026-09-19 в шапке файла). Разъехавшиеся цифры между этой VIEW и realt_metrics_by_month — ожидаемо, пока не выровняем и эту.';
-ALTER TABLE realt_revenue_by_service COMMENT COLUMN visits 'Количество визитов по услуге за месяц.';
-ALTER TABLE realt_revenue_by_service COMMENT COLUMN avg_check 'Средний чек по услуге = выручка / визиты.';
-
-
--- realt_expenses_by_month — «Остальные расходы» по типу статьи помесячно (из
--- realt_expenses, вкладка «Остальные расходы»). Строка = (месяц, expense_type).
--- Набор конкретных статей 2025≠2026, поэтому группируем по типу. Суммы
--- отрицательные (расход). ШАА (Шмилович): даём и полную сумму, и без ШАА —
--- чтобы дашборд мог показывать «с/без Шмиловича» единообразно с выручкой.
-CREATE VIEW IF NOT EXISTS realt_expenses_by_month AS
-SELECT
-    toDateTime(toStartOfMonth(period)) + INTERVAL 12 HOUR AS month,
-    coalesce(expense_type, 'Прочее')                      AS expense_type,
-    sum(realt_expenses.amount)                            AS amount,
-    sumIf(realt_expenses.amount, is_shaa = 0)             AS amount_ex_shaa,
-    count()                                               AS articles
-FROM realt_expenses
-WHERE period IS NOT NULL
-GROUP BY month, expense_type
-ORDER BY month, expense_type;
-
-ALTER TABLE realt_expenses_by_month COMMENT COLUMN month 'Начало месяца расхода, время 12:00 (см. realt_metrics_by_month.month — против сдвига Report Timezone в Metabase).';
-ALTER TABLE realt_expenses_by_month COMMENT COLUMN expense_type 'Группа/тип статьи (строка «Дата/Тип» вкладки): Аренда+коммуналка/Налоги ФОТ/Санпэдрежим/… NULL→«Прочее».';
-ALTER TABLE realt_expenses_by_month COMMENT COLUMN amount 'Сумма расходов типа за месяц = SUM(amount), обычно отрицательная. Включает ШАА (Шмилович).';
-ALTER TABLE realt_expenses_by_month COMMENT COLUMN amount_ex_shaa 'То же без статей Шмиловича (is_shaa=0) — для среза «без Шмиловича», согласованного с выручкой.';
-ALTER TABLE realt_expenses_by_month COMMENT COLUMN articles 'Сколько статей-столбцов этого типа попало в месяц (диагностика).';
 
 
 -- realt_pl_by_group_month — P&L по группам статей (Помещение/Маркетинг/
