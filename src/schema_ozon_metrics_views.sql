@@ -1,3 +1,11 @@
+-- Помесячные метрики Ozon по кабинету. С 2026-09-23 это ТОНКАЯ АГРЕГАЦИЯ
+-- поверх ozon_metrics_by_sku_month (см. schema_ozon_metrics_views_sku.sql) —
+-- формулы переехали туда целиком, как это уже сделано у WB. Правьте формулы
+-- там, здесь только суммирование по артикулам. Проверено при переводе:
+-- все 11 метрик совпали с прежним независимым расчётом побайтово.
+-- Комментарии ниже описывают формулы, которые теперь живут в sku-VIEW, и
+-- оставлены здесь как история решений по ним.
+--
 -- VIEW-слой с бизнес-формулами метрик Ozon — единый источник истины,
 -- аналог wb_metrics_by_cabinet_month (см. schema_wb_metrics_views.sql —
 -- та же мотивация: и Metabase Model, и будущий AI-бот должны видеть одну
@@ -37,53 +45,30 @@
 -- та же, меняется только то, в какой из двух метрик она сидит.
 
 CREATE VIEW IF NOT EXISTS ozon_metrics_by_cabinet_month AS
-WITH base AS (
-    SELECT
-        cabinet,
-        toDateTime(toStartOfMonth(accrual_date)) + INTERVAL 12 HOUR AS month,
-
-        coalesce(sumIf(qty, service_group = 'Продажи' AND accrual_type = 'Выручка'), 0) AS q_sale,
-        coalesce(sumIf(qty, service_group = 'Возвраты' AND accrual_type = 'Возврат выручки'), 0) AS q_ret,
-
-        coalesce(sumIf(total_amount, service_group = 'Продажи' AND total_amount >= 0), 0) AS sales_spp,
-        coalesce(sumIf(total_amount, service_group = 'Продажи' AND accrual_type IN ('Выручка', 'Программы партнёров') AND total_amount >= 0), 0) AS sales,
-        coalesce(sumIf(total_amount, service_group = 'Продажи' AND accrual_type = 'Баллы за скидки' AND total_amount >= 0), 0) AS spp,
-        coalesce(sumIf(total_amount, service_group = 'Вознаграждение Ozon'), 0) AS commission,
-        coalesce(sumIf(total_amount, service_group = 'Возвраты'), 0)
-            + coalesce(sumIf(total_amount, service_group = 'Продажи' AND total_amount < 0), 0) AS corrections,
-        coalesce(sumIf(total_amount, service_group = 'Услуги доставки'), 0) AS logistics,
-        coalesce(sumIf(total_amount, service_group IN ('Услуги агентов', 'Услуги партнёров')), 0) AS last_mile,
-        coalesce(sumIf(total_amount, service_group IN ('Другие услуги', 'Другие услуги и штрафы')), 0) AS fines,
-        coalesce(sumIf(total_amount, service_group = 'Компенсации и декомпенсации'), 0) AS surcharges,
-        coalesce(sumIf(total_amount, service_group = 'Услуги FBO'), 0) AS storage,
-        coalesce(sumIf(total_amount, service_group = 'Продвижение и реклама'), 0) AS promotion,
-        coalesce(sumIf(total_amount, service_group = 'Прочие начисления'), 0) AS other
-    FROM ozon_reports
-    WHERE accrual_date IS NOT NULL
-    GROUP BY cabinet, month
-)
 SELECT
-    cabinet                                          AS cabinet,
-    month                                             AS month,
-    toInt32(q_sale - abs(q_ret))                      AS sales_qty,
-    sales_spp                                         AS sales_with_spp,
-    sales                                             AS sales_amount,
-    spp                                               AS spp_amount,
-    commission                                        AS commission,
-    corrections                                       AS returns_corrections,
-    (sales + spp + commission + corrections)          AS payable_for_goods,
-    logistics                                         AS logistics_cost,
-    last_mile                                         AS last_mile_cost,
-    fines                                             AS fines,
-    surcharges                                        AS surcharges,
-    storage                                           AS storage_cost,
-    promotion                                         AS promotion_cost,
-    other                                              AS other_accruals,
-    (
-        sales + spp + commission + corrections
-        + logistics + last_mile + fines + surcharges + storage + promotion + other
-    )                                                  AS payable_total
-FROM base
+    cabinet                          AS cabinet,
+    month                             AS month,
+    toInt32(sum(sales_qty))          AS sales_qty,
+    sum(sales_with_spp)              AS sales_with_spp,
+    sum(sales_amount)                AS sales_amount,
+    sum(spp_amount)                  AS spp_amount,
+    sum(commission)                  AS commission,
+    sum(returns_corrections)         AS returns_corrections,
+    sum(payable_for_goods)           AS payable_for_goods,
+    sum(logistics_cost)              AS logistics_cost,
+    sum(last_mile_cost)              AS last_mile_cost,
+    sum(fines)                       AS fines,
+    sum(surcharges)                  AS surcharges,
+    sum(storage_cost)                AS storage_cost,
+    sum(promotion_cost)              AS promotion_cost,
+    sum(other_accruals)              AS other_accruals,
+    sum(payable_total)               AS payable_total,
+    sum(cogs)                        AS cogs,
+    sum(gross_profit)                AS gross_profit,
+    sum(cogs_qty_covered)            AS cogs_qty_covered,
+    sum(cogs_qty_uncovered)          AS cogs_qty_uncovered
+FROM ozon_metrics_by_sku_month
+GROUP BY cabinet, month
 ORDER BY cabinet, month;
 
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN cabinet 'Идентификатор личного кабинета Ozon (строка), связывается с project_cabinets.cabinet при platform=''ozon''.';
@@ -103,3 +88,7 @@ ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN storage_cost 'Хран�
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN promotion_cost 'Продвижение = вся группа "Продвижение и реклама".';
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN other_accruals 'Прочие начисления = вся группа "Прочие начисления".';
 ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN payable_total 'Итог "Выручка к перечислению" = payable_for_goods + logistics_cost + last_mile_cost + fines + surcharges + storage_cost + promotion_cost + other_accruals. НЕ включает "Займы и факторинг" — та метрика не в данных Ozon, подставляется вручную в исходном скрипте ozon_report.py и сюда не перенесена. Проверено: для CloudSix за январь-май 2026 сходится с sum(total_amount) по всем строкам день-в-день (расхождение <1e-6 ₽).';
+ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN cogs 'Себестоимость проданного товара, ₽, знак инвертирован (расход). Сопоставляется поартикульно по неделе начисления из wb_cogs_weekly. Формула — в ozon_metrics_by_sku_month.';
+ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN gross_profit 'Валовая прибыль = payable_total + cogs. Формула — в ozon_metrics_by_sku_month.';
+ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN cogs_qty_covered 'Проданных единиц с известной себестоимостью. Формула — в ozon_metrics_by_sku_month.';
+ALTER TABLE ozon_metrics_by_cabinet_month COMMENT COLUMN cogs_qty_uncovered 'Проданных единиц БЕЗ себестоимости (посчитаны по нулю) — на столько занижены cogs/gross_profit. Формула — в ozon_metrics_by_sku_month.';

@@ -25,6 +25,36 @@
 -- sku — supplier_article ("Артикул поставщика" из wb_reports), пустые
 -- значения помечены как 'без артикула', а не NULL/пусто, чтобы не
 -- потерять такие строки при GROUP BY/фильтрации.
+--
+-- СЕБЕСТОИМОСТЬ (с 2026-09-23). Считается из wb_cogs_weekly (ручная
+-- выгрузка .xlsx, см. schema_wb_cogs.sql) отдельным CTE cogs_agg и
+-- присоединяется к base ПОСЛЕ агрегации, по ключу (cabinet, month, sku) —
+-- то есть один-к-одному. Это сделано намеренно: join к сырым строкам
+-- wb_reports внутри base при любом задвоении справочника размножил бы
+-- строки и тихо испортил ВСЕ метрики, а не только себестоимость.
+--
+-- Сопоставление: артикул в нижнем регистре + неделя продажи
+-- (toMonday(sale_date), понедельник-воскресенье, как в самом файле
+-- себестоимости). Берётся неделя ТОЙ операции, которая стоит в строке
+-- отчёта: продажа — со знаком плюс, возврат — со знаком минус, по той
+-- себестоимости, что действовала в неделю этой операции. Возврат НЕ
+-- отматывается к неделе исходной продажи — в строках возврата WB нет
+-- ссылки на дату первоначальной продажи, поэтому такой вариант
+-- технически недостижим, а не отвергнут.
+--
+-- Артикулы, которых нет в файле себестоимости, дают cogs = 0 (решение
+-- пользователя 2026-09-23: занижать, но не выдумывать цену). Чтобы
+-- занижение было видно, а не пряталось, рядом живут две СЧЁТНЫЕ колонки —
+-- cogs_qty_covered и cogs_qty_uncovered: сколько проданных единиц попало
+-- под известную себестоимость, а сколько осталось без неё. Проверка на
+-- данных 2026-09-23: покрыто 85% проданных единиц по проекту (CloudSix
+-- 97%, Hauser 99%, NoxLab 99%, INOVO 97%, Torado 86%, Feel 72%, Lampa 66%,
+-- ARB 42%) — низкое покрытие лечится дозаливкой файла, а не правкой формул.
+--
+-- payable_total себестоимость НЕ включает и включать не должна: это
+-- "К перечислению" (что платит WB), на нём стоят сверки
+-- (compare_wb_sources.py, reconciliation_rules_wb.yaml). Себестоимость
+-- участвует только в gross_profit = payable_total + cogs.
 
 CREATE VIEW IF NOT EXISTS wb_metrics_by_sku_month AS
 WITH cs_k_types AS (
@@ -86,6 +116,37 @@ base AS (
     FROM wb_reports
     WHERE sale_date IS NOT NULL
     GROUP BY cabinet, month, sku
+),
+cogs_agg AS (
+    SELECT
+        r.cabinet AS cabinet,
+        toDateTime(toStartOfMonth(r.sale_date)) + INTERVAL 12 HOUR AS month,
+        coalesce(nullIf(trim(r.supplier_article), ''), 'без артикула') AS sku,
+        -- has_cost, а не проверка unit_cost на NULL: в ClickHouse LEFT JOIN
+        -- по умолчанию подставляет 0, и настоящая нулевая цена была бы
+        -- неотличима от отсутствия строки в справочнике.
+        coalesce(sum(r.net_qty * w.unit_cost), 0)          AS cogs_amount,
+        coalesce(sum(if(w.has_cost = 1, r.net_qty, 0)), 0) AS qty_covered,
+        coalesce(sum(if(w.has_cost = 1, 0, r.net_qty)), 0) AS qty_uncovered
+    FROM (
+        SELECT
+            cabinet,
+            sale_date,
+            supplier_article,
+            lowerUTF8(trim(supplier_article)) AS sku_key,
+            toMonday(sale_date) AS week_start,
+            multiIf(lowerUTF8(trim(payment_reason)) = 'продажа', qty,
+                    lowerUTF8(trim(payment_reason)) = 'возврат', -qty,
+                    0) AS net_qty
+        FROM wb_reports
+        WHERE sale_date IS NOT NULL
+          AND lowerUTF8(trim(payment_reason)) IN ('продажа', 'возврат')
+    ) r
+    LEFT JOIN (
+        SELECT sku, week_start, unit_cost, toUInt8(1) AS has_cost
+        FROM wb_cogs_weekly FINAL
+    ) w ON r.sku_key = w.sku AND r.week_start = w.week_start
+    GROUP BY cabinet, month, sku
 )
 SELECT
     cabinet                                               AS cabinet,
@@ -110,9 +171,24 @@ SELECT
       (ah_sale - ah_ret) + (-direct_logistics) + (-reverse_logistics)
       + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
       + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
-    )                                                       AS payable_total
+    )                                                       AS payable_total,
+    (-coalesce(c.cogs_amount, 0))                           AS cogs,
+    (
+      (ah_sale - ah_ret) + (-direct_logistics) + (-reverse_logistics)
+      + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
+      + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
+      - coalesce(c.cogs_amount, 0)
+    )                                                       AS gross_profit,
+    toInt64(coalesce(c.qty_covered, 0))                     AS cogs_qty_covered,
+    toInt64(coalesce(c.qty_uncovered, 0))                   AS cogs_qty_uncovered
 FROM base
+LEFT JOIN cogs_agg c
+    ON base.cabinet = c.cabinet AND base.month = c.month AND base.sku = c.sku
 ORDER BY cabinet, sku, month;
 
 ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN sku 'Артикул продавца (supplier_article из wb_reports), пустые значения — ''без артикула''. Доп. измерение поверх той же формулы, что wb_metrics_by_cabinet_month.';
 ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN product_name 'Название товара — anyHeavy(product_name) по артикулу (самое частое встреченное название, на случай расхождений в написании за разные периоды).';
+ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN cogs 'Себестоимость проданного товара, ₽, знак инвертирован (расход, как штрафы и логистика). Считается как (продажи минус возвраты) в штуках × себестоимость единицы за НЕДЕЛЮ операции из wb_cogs_weekly. Артикулы, которых нет в справочнике себестоимости, дают 0 — насколько цифра занижена, видно по cogs_qty_uncovered. В payable_total НЕ входит.';
+ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN gross_profit 'Валовая прибыль = payable_total + cogs (cogs отрицательный). Занижена ровно настолько, насколько не покрыт справочник себестоимости — смотрите cogs_qty_uncovered рядом.';
+ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN cogs_qty_covered 'Сколько проданных единиц (продажи минус возвраты) нашли себестоимость на свою неделю. Колонка счётная, суммируется по месяцам и артикулам свободно.';
+ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN cogs_qty_uncovered 'Сколько проданных единиц (продажи минус возвраты) остались БЕЗ себестоимости и посчитаны по нулю. Ненулевое значение = cogs/gross_profit занижены, лечится дозаливкой файла себестоимости (ingest_wb_cogs.py), а не правкой формул. Процент покрытия считайте как covered/(covered+uncovered) в карточке — готовой колонки-доли здесь нет намеренно, такую долю нельзя суммировать по месяцам.';

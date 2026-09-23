@@ -69,7 +69,11 @@ SELECT
     sum(deductions)                  AS deductions,
     sum(wibes_discount)              AS wibes_discount,
     sum(promotion_cost)              AS promotion_cost,
-    sum(payable_total)               AS payable_total
+    sum(payable_total)               AS payable_total,
+    sum(cogs)                        AS cogs,
+    sum(gross_profit)                AS gross_profit,
+    sum(cogs_qty_covered)            AS cogs_qty_covered,
+    sum(cogs_qty_uncovered)          AS cogs_qty_uncovered
 FROM wb_metrics_by_sku_month
 GROUP BY cabinet, month
 ORDER BY cabinet, month;
@@ -90,4 +94,8 @@ ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN acceptance_cost 'Плат
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN deductions 'Удержание (deductions) за вычетом строк, относящихся к продвижению. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wibes_discount 'Скидка Wibes = компенсация минус расходы программы лояльности. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN promotion_cost '"Продвижение WB"/"Продвижение ВБ" объединены в одну метрику. Формула — в wb_metrics_by_sku_month.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. Себестоимость сюда НЕ входит — на этой метрике стоят сверки. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN cogs 'Себестоимость проданного товара, ₽, знак инвертирован (расход). Сопоставляется поартикульно по неделе операции из wb_cogs_weekly. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN gross_profit 'Валовая прибыль = payable_total + cogs. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN cogs_qty_covered 'Проданных единиц с известной себестоимостью. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN cogs_qty_uncovered 'Проданных единиц БЕЗ себестоимости (посчитаны по нулю) — на столько занижены cogs/gross_profit. Формула — в wb_metrics_by_sku_month.';

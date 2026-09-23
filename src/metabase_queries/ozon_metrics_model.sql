@@ -36,6 +36,10 @@ SELECT
     storage_cost                       AS "Хранение на складе",
     promotion_cost                       AS "Продвижение",
     other_accruals                        AS "Прочие начисления",
-    payable_total                          AS "Выручка к перечислению"
+    payable_total                          AS "Выручка к перечислению",
+    cogs                                   AS "Себестоимость",
+    gross_profit                            AS "Валовая прибыль",
+    cogs_qty_covered                         AS "Ед. с себестоимостью",
+    cogs_qty_uncovered                        AS "Ед. без себестоимости"
 FROM ozon_metrics_by_cabinet_month
 ORDER BY cabinet, month

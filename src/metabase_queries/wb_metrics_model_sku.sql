@@ -28,6 +28,10 @@ SELECT
     deductions                       AS "Удержание",
     wibes_discount                   AS "Скидка Wibes",
     promotion_cost                   AS "Продвижение WB",
-    payable_total                    AS "К перечислению итого"
+    payable_total                    AS "К перечислению итого",
+    cogs                                   AS "Себестоимость",
+    gross_profit                            AS "Валовая прибыль",
+    cogs_qty_covered                         AS "Ед. с себестоимостью",
+    cogs_qty_uncovered                        AS "Ед. без себестоимости"
 FROM wb_metrics_by_sku_month
 ORDER BY cabinet, sku, month
