@@ -36,7 +36,7 @@ SELECT
         ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'][toMonth(r.cohort_month)],
         '-',
         substring(toString(toYear(r.cohort_month)), 3, 2)
-    )                                                              AS "Месяц когорты",
+    )                                                              AS "Мес",
     r.visit_seq                                                   AS "Номер приёма",
     round(r.clients_reached / nullIf(cs.cohort_size, 0) * 100, 1) AS "Возвращаемость, %",
     r.clients_reached                                             AS "Клиентов дошло",
