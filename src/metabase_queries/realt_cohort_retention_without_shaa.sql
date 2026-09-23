@@ -1,9 +1,9 @@
 -- Metabase: native SQL карточка дашборда «Когорты | Реальт», вкладка
 -- «Без ШАА» — то же самое, что realt_cohort_retention_with_shaa.sql (см.
--- тот файл для полного описания логики/ГОЧТЯ), но визиты подразделения
--- ШАА (Шмилович/Онегина, role_group='ФОТ ШАА' в realt_visits_categorized)
--- ИСКЛЮЧЕНЫ — номер приёма и месяц когорты пересчитаны заново на
--- отфильтрованном наборе визитов клиента.
+-- тот файл для полного описания логики/ГОЧТЯ/параметров), но визиты
+-- подразделения ШАА (Шмилович/Онегина, role_group='ФОТ ШАА' в
+-- realt_visits_categorized) ИСКЛЮЧЕНЫ — номер приёма и месяц когорты
+-- пересчитаны заново на отфильтрованном наборе визитов клиента.
 
 WITH base AS (
     SELECT
@@ -32,11 +32,18 @@ reached AS (
     GROUP BY cohort_month, visit_seq
 )
 SELECT
-    r.cohort_month                                                AS "Месяц когорты",
+    concat(
+        ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'][toMonth(r.cohort_month)],
+        '-',
+        substring(toString(toYear(r.cohort_month)), 3, 2)
+    )                                                              AS "Месяц когорты",
     r.visit_seq                                                   AS "Номер приёма",
     round(r.clients_reached / nullIf(cs.cohort_size, 0) * 100, 1) AS "Возвращаемость, %",
     r.clients_reached                                             AS "Клиентов дошло",
     cs.cohort_size                                                AS "Размер когорты"
 FROM reached r
 JOIN cohort_sizes cs ON r.cohort_month = cs.cohort_month
+WHERE 1 = 1
+    [[ AND r.cohort_month >= {{start_month}} ]]
+    [[ AND r.cohort_month < {{end_month}} + INTERVAL 1 MONTH ]]
 ORDER BY r.cohort_month, r.visit_seq
