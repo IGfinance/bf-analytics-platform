@@ -66,3 +66,10 @@ FROM ozon_cashflow_periods p FINAL
 LEFT JOIN excluded_amounts e ON p.cabinet = e.cabinet AND p.period_begin = e.period_begin
 GROUP BY p.cabinet, month
 ORDER BY p.cabinet, month;
+
+ALTER TABLE ozon_cashflow_reconciled_month COMMENT COLUMN cabinet 'Кабинет Ozon (строка), связывается с project_cabinets.cabinet/brand_cabinets.cabinet при platform=''ozon''.';
+ALTER TABLE ozon_cashflow_reconciled_month COMMENT COLUMN month 'Начало месяца — агрегация периодов выплат (~неделя) из /v1/finance/cash-flow-statement/list, попадающих в этот календарный месяц по дате начала периода.';
+ALTER TABLE ozon_cashflow_reconciled_month COMMENT COLUMN delivery_total 'Выручка по доставкам за вычетом базовой комиссии Ozon и логистики доставки (delivery.total из cash-flow-statement = delivery.amount + delivery.delivery_services.total). Сходится день-в-день с operation_type=Доставка покупателю старой ozon_api_transactions.';
+ALTER TABLE ozon_cashflow_reconciled_month COMMENT COLUMN return_total 'То же для возвратов (return.total), обычно отрицательное. Сходится день-в-день с operation_type=Получение возврата/Доставка и обработка возврата старой ozon_api_transactions.';
+ALTER TABLE ozon_cashflow_reconciled_month COMMENT COLUMN services_others_total 'Реклама, подписки, хранение, компенсации и прочие account-level статьи (services.total + others.total), за вычетом loan, агентских аномалий AgencyFeeForSale/PointsAwarded и задвоенных статей логистики — см. комментарий в начале файла про все три поправки.';
+ALTER TABLE ozon_cashflow_reconciled_month COMMENT COLUMN reconciled_total 'Итоговая сумма к перечислению за месяц (delivery_total + return_total + services_others_total). Сверена с ozon_reports/ozon_api_transactions на CloudSix — сходится до копеек, кроме задокументированного остатка (FBO-поставочные сборы "Упаковка/Временное размещение товара партнерами" — нет ни в одном новом Ozon-методе).';
