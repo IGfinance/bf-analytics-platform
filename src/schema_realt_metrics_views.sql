@@ -39,6 +39,14 @@
 --
 -- COMMENT COLUMN на VIEW может не поддерживаться старой версией ClickHouse —
 -- накатывать ALTER по одному, проверяя system.columns (см. golden example).
+--
+-- ГОЧТЯ (2026-09-24): CREATE OR REPLACE VIEW СБРАСЫВАЕТ все COMMENT COLUMN
+-- этой VIEW. Обнаружено на realt_metrics_by_month: в проде осталось 4
+-- комментария из 37 — кто-то накатывал VIEW без последующих ALTER. После
+-- ЛЮБОГО CREATE OR REPLACE прогонять весь блок ALTER TABLE ... COMMENT
+-- COLUMN этой таблицы заново и сверять
+-- `SELECT count() FROM system.columns WHERE table = '<имя>' AND comment != ''`
+-- с числом ALTER-ов в этом файле.
 
 -- 2026-09-17: добавлена разбивка ФОТ по pay_type (Оклад+Бонус/Проценты) —
 -- раньше считалась отдельно и дублировалась в трёх Metabase Model
@@ -407,30 +415,26 @@ rolling_m AS (
     -- ВАЖНО: для последних 1-2 загруженных месяцев окно уходит в ещё не
     -- загруженные данные — метрика там будет ЗАНИЖЕНА не по факту, а
     -- потому что будущих визитов ещё нет в базе (см. комментарий к колонке).
-    -- !!! БАГ, НАЙДЕН 2026-09-24, ФИКС ПОКА НЕ ПРИМЕНЁН !!!
-    -- Окно ниже НЕ РАБОТАЕТ: алиас `acquisition_month AS month` затеняет
-    -- колонку `month` того же скоупа, и внутри countIf оба имени
-    -- разрешаются в acquisition_month. Условие превращается в
-    -- «M >= M AND M < M+3» = всегда истина, то есть считаются ВСЕ визиты
-    -- когорты за всю загруженную историю, а не за 3 месяца. Численно
-    -- проверено: колонка совпадает с count() без условия во все 20
-    -- месяцев 2025-2026 (январь 2026: 567 вместо честных 436, завышение
-    -- 20-30% везде, кроме 1-2 последних месяцев, где сходится случайно —
-    -- будущих визитов ещё нет в базе, поэтому баг и не был виден).
-    -- Затронута строка карточки 186 «Визиты на нового клиента (3 мес,
-    -- скользящее)» на дашборде id 8.
-    -- ФИКС (одна строка): переименовать алиас, например
-    --     SELECT acquisition_month AS cohort_month,
-    --            countIf(month >= acquisition_month
-    --                    AND month < acquisition_month + INTERVAL 3 MONTH) ...
-    --     GROUP BY acquisition_month
-    -- и поправить JOIN в финальном SELECT (r.month -> r.cohort_month).
-    -- НЕ применено сознательно: фикс меняет числа, которые владелец уже
-    -- просматривал, — ждёт его решения. Корректная реализация той же
-    -- идеи (с разрезом по врачам) — в
-    -- src/metabase_queries/realt_visits_3m_by_doctor.sql.
+    -- !!! ГОЧТЯ, БАГ НАЙДЕН И ПОЧИНЕН 2026-09-24 — НЕ НАЗЫВАТЬ АЛИАС
+    -- `month` В ЭТОМ SELECT !!!
+    -- До фикса здесь было `SELECT acquisition_month AS month, countIf(month
+    -- >= acquisition_month AND month < acquisition_month + INTERVAL 3
+    -- MONTH)`. Алиас затенял колонку `month` того же скоупа: внутри countIf
+    -- ОБА имени разрешались в acquisition_month, условие превращалось в
+    -- «M >= M AND M < M+3» = всегда истина, и окно не применялось вовсе —
+    -- считались ВСЕ визиты когорты за всю загруженную историю. Численно:
+    -- колонка совпадала с count() без условия во все 20 месяцев 2025-2026
+    -- (январь 2026 — 567 вместо честных 436, завышение 20-30% везде, кроме
+    -- 1-2 последних месяцев, где сходилось случайно: будущих визитов ещё
+    -- нет в базе, поэтому баг и не был виден два месяца). Затрагивало
+    -- строку «Визиты на нового клиента (3 мес, скользящее)» карточки 186
+    -- на дашборде id 8. Фикс — алиас переименован в cohort_month (и
+    -- r.month -> r.cohort_month в финальном SELECT ниже), сам countIf не
+    -- менялся. Та же ГОЧТЯ описана в
+    -- src/metabase_queries/realt_visits_3m_by_doctor.sql (карточка 196,
+    -- где баг и вскрылся при сверке).
     SELECT
-        acquisition_month AS month,
+        acquisition_month AS cohort_month,
         countIf(month >= acquisition_month AND month < acquisition_month + INTERVAL 3 MONTH) AS new_client_visits_3m
     FROM (
         SELECT
@@ -473,7 +477,7 @@ payroll_m AS (
     GROUP BY month
 )
 SELECT
-    coalesce(k.month, p.month, f.month, s.month, r.month) AS month,
+    coalesce(k.month, p.month, f.month, s.month, r.cohort_month) AS month,
     f.full_revenue                                   AS full_revenue,
     k.revenue                                        AS revenue,
     k.visits                                         AS visits,
@@ -514,7 +518,7 @@ FROM klientiks_m AS k
 FULL OUTER JOIN payroll_m AS p ON k.month = p.month
 FULL OUTER JOIN full_revenue_m AS f ON coalesce(k.month, p.month) = f.month
 FULL OUTER JOIN shaa_m AS s ON coalesce(k.month, p.month, f.month) = s.month
-FULL OUTER JOIN rolling_m AS r ON coalesce(k.month, p.month, f.month, s.month) = r.month
+FULL OUTER JOIN rolling_m AS r ON coalesce(k.month, p.month, f.month, s.month) = r.cohort_month
 ORDER BY month;
 
 ALTER TABLE realt_metrics_by_month COMMENT COLUMN month 'Начало месяца (визита по Клиентикс, либо начисления ФОТ, если визитов в этом месяце ещё нет — FULL OUTER JOIN, а не LEFT, иначе месяцы с ФОТ, но без визитов, молча пропадают). Время 12:00 — чтобы Report Timezone в Metabase не сдвигал 1-е число на предыдущий месяц (как в wb_metrics_by_cabinet_month).';
