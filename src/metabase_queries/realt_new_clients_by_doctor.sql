@@ -7,9 +7,13 @@
 -- новыми клиентами в месяце среднее число визитов статистически пустое,
 -- а пустая ячейка в метрике = «новых клиентов не было», а не «ноль
 -- визитов». Определение когорты, тип врача, ГОЧТЯ, детерминированный
--- tie-break и группировка — ровно как в realt_visits_3m_by_doctor.sql,
+-- tie-break и раскладка — ровно как в realt_visits_3m_by_doctor.sql,
 -- см. подробную шапку там; здесь отличается только набор выводимых
 -- колонок (count вместо ratio).
+-- ОТЛИЧИЕ В СТРОКЕ-ЗАГОЛОВКЕ ГРУППЫ: в метрической карточке месячные
+-- значения там пустые (усреднять ratio по группе врачей нельзя), а здесь
+-- заполнены — это обычные счётчики клиентов, они складываются корректно,
+-- и сумма по группам сходится с общим числом новых клиентов месяца.
 
 WITH
 v AS (
@@ -86,32 +90,61 @@ metric AS (
     FROM per_client AS p
     LEFT JOIN doc_typed AS t ON p.pc_doctor = t.typed_doctor
     GROUP BY doc_group, doc_ord, doc_fio, mnum
+),
+doctors AS (
+    -- Одна строка = один врач: 12 месячных значений + год.
+    SELECT
+        doc_group AS d_group,
+        doc_ord   AS d_ord,
+        doc_fio   AS d_fio,
+        toFloat64(sumIf(new_clients, mnum = 1 )) AS m01,
+        toFloat64(sumIf(new_clients, mnum = 2 )) AS m02,
+        toFloat64(sumIf(new_clients, mnum = 3 )) AS m03,
+        toFloat64(sumIf(new_clients, mnum = 4 )) AS m04,
+        toFloat64(sumIf(new_clients, mnum = 5 )) AS m05,
+        toFloat64(sumIf(new_clients, mnum = 6 )) AS m06,
+        toFloat64(sumIf(new_clients, mnum = 7 )) AS m07,
+        toFloat64(sumIf(new_clients, mnum = 8 )) AS m08,
+        toFloat64(sumIf(new_clients, mnum = 9 )) AS m09,
+        toFloat64(sumIf(new_clients, mnum = 10)) AS m10,
+        toFloat64(sumIf(new_clients, mnum = 11)) AS m11,
+        toFloat64(sumIf(new_clients, mnum = 12)) AS m12,
+        toFloat64(sum(new_clients)) AS m_year
+    FROM metric
+    GROUP BY d_group, d_ord, d_fio
 )
--- ГОЧТЯ GROUPING SETS в ClickHouse: у колонки, НЕ входящей в текущий
--- grouping set, тип становится Nullable и значение приходит NULL (а не
--- дефолтом типа) — поэтому подписи итоговых строк и ORDER BY идут через
--- coalesce() (подробнее — в realt_visits_3m_by_doctor.sql).
-SELECT
-    if(coalesce(doc_group, '') = '', 'ВСЯ КЛИНИКА', doc_group) AS "Тип",
-    if(coalesce(doc_fio, '')   = '', 'ИТОГО',       doc_fio)   AS "Врач",
-    toFloat64(sumIf(new_clients, mnum = 1 ))    AS "Янв",
-    toFloat64(sumIf(new_clients, mnum = 2 ))    AS "Фев",
-    toFloat64(sumIf(new_clients, mnum = 3 ))    AS "Мар",
-    toFloat64(sumIf(new_clients, mnum = 4 ))    AS "Апр",
-    toFloat64(sumIf(new_clients, mnum = 5 ))    AS "Май",
-    toFloat64(sumIf(new_clients, mnum = 6 ))    AS "Июн",
-    toFloat64(sumIf(new_clients, mnum = 7 ))    AS "Июл",
-    toFloat64(sumIf(new_clients, mnum = 8 ))    AS "Авг",
-    toFloat64(sumIf(new_clients, mnum = 9 ))    AS "Сен",
-    toFloat64(sumIf(new_clients, mnum = 10))    AS "Окт",
-    toFloat64(sumIf(new_clients, mnum = 11))    AS "Ноя",
-    toFloat64(sumIf(new_clients, mnum = 12))    AS "Дек",
-    toFloat64(sum(new_clients))                 AS "За год"
-FROM metric
-GROUP BY GROUPING SETS ((doc_ord, doc_group, doc_fio), (doc_ord, doc_group), ())
+SELECT "Врач", "Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек", "За год"
+FROM (
+    -- Строка-заголовок группы (см. РАСКЛАДКА в шапке).
+    SELECT
+        d_ord                 AS ord,
+        0                     AS is_doc,
+        upperUTF8(d_group)    AS "Врач",
+        sum(m01) AS "Янв",
+        sum(m02) AS "Фев",
+        sum(m03) AS "Мар",
+        sum(m04) AS "Апр",
+        sum(m05) AS "Май",
+        sum(m06) AS "Июн",
+        sum(m07) AS "Июл",
+        sum(m08) AS "Авг",
+        sum(m09) AS "Сен",
+        sum(m10) AS "Окт",
+        sum(m11) AS "Ноя",
+        sum(m12) AS "Дек",
+        sum(m_year) AS "За год"
+    FROM doctors
+    GROUP BY ord, d_group
+    UNION ALL
+    SELECT
+        d_ord, 1, d_fio,
+        m01, m02, m03, m04, m05, m06, m07, m08, m09, m10, m11, m12,
+        m_year
+    FROM doctors
+)
 ORDER BY
-    coalesce(doc_ord, 0) ASC,
-    (coalesce(doc_fio, '') != '') ASC,
+    ord ASC,
+    is_doc ASC,
     "За год" DESC,
     "Врач" ASC
 SETTINGS query_plan_max_optimizations_to_apply = 100000

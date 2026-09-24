@@ -49,11 +49,24 @@
 -- статистически пустое). Пустая ячейка = в этом месяце у врача не было
 -- НИ ОДНОГО нового клиента (делить не на что), а не ноль визитов.
 
--- Группировка строк сделана через GROUP BY GROUPING SETS: одна и та же
--- пачка sumIf-ов даёт и строки врачей, и «ИТОГО» по типу, и «ВСЯ
--- КЛИНИКА / ИТОГО». Итоговые строки — это НЕ среднее средних: числитель
--- и знаменатель суммируются по группе и делятся уже потом (та же ловушка
--- и то же решение, что у «За год» в realt_monthly_metrics.sql).
+-- РАСКЛАДКА (переделана 2026-09-24 по просьбе владельца: «сделать как
+-- сводную, не так страшно»). Отдельной колонки «Тип» больше НЕТ — вместо
+-- неё перед каждой группой идёт строка-заголовок с названием группы
+-- капсом («ПСИХИАТРЫ»/«ПСИХОЛОГИ»/«ПРОЧИЕ»), а врачи под ней — просто
+-- по фамилии. В Metabase заголовки подсвечены фоном через
+-- table.column_formatting (три правила highlight_row по точному
+-- совпадению текста в колонке «Врач»), поэтому набор этих трёх строк
+-- нельзя менять, не поправив visualization_settings карточки.
+-- В строке-заголовке заполнена ТОЛЬКО «Новых клиентов за год» (обычная
+-- сумма, складывается корректно). Месячные значения и «За год» там
+-- ПУСТЫЕ СОЗНАТЕЛЬНО: усреднять метрику по группе врачей нельзя по той
+-- же причине, по которой убрана строка «ВСЯ КЛИНИКА» — в числителе
+-- только визиты к СВОЕМУ врачу, поэтому клиент, перешедший от одного
+-- психиатра к другому, в групповом среднем всё равно не учитывается, и
+-- такое «среднее по группе» вводило бы в заблуждение.
+-- Строка «ВСЯ КЛИНИКА / ИТОГО» и строки «ИТОГО» по типам УБРАНЫ
+-- (2026-09-24, та же просьба) — раньше они считались через
+-- GROUP BY GROUPING SETS, теперь его здесь нет.
 
 -- ГОЧТЯ (1-2 унаследованы от остальных карточек Реальта, 3-4 найдены на
 -- этой карточке 2026-09-24):
@@ -88,6 +101,14 @@
 --    определению метрики. Здесь вместо этого: детерминированный
 --    argMin(..., (visit_start, doctor_name)) — tie-break по алфавиту ФИО
 --    — и ОДИН проход per_client, дающий числитель и знаменатель разом.
+-- 5) Metabase 0.63.10 НЕ УМЕЕТ визуал «Сводная таблица» (display:
+--    "pivot") на native SQL-карточке — проверено эмпирически 2026-09-24
+--    на пробной карточке: с display "pivot" тот же запрос возвращает
+--    искалеченный результат (служебная колонка pivot-grouping и строки
+--    вида [0]), с display "table" — нормальные строки. Бэкендный
+--    /api/card/:id/query/pivot на такой карточке отдаёт 404. Поэтому
+--    «сводный» вид (месяцы в столбцах, группы в строках) собирается
+--    вручную в самом SQL, как здесь и в остальных карточках Реальта.
 
 WITH
 v AS (
@@ -163,34 +184,64 @@ metric AS (
     FROM per_client AS p
     LEFT JOIN doc_typed AS t ON p.pc_doctor = t.typed_doctor
     GROUP BY doc_group, doc_ord, doc_fio, mnum
+),
+doctors AS (
+    -- Одна строка = один врач: 12 месячных значений + год.
+    SELECT
+        doc_group AS d_group,
+        doc_ord   AS d_ord,
+        doc_fio   AS d_fio,
+        sumIf(visits_3m, mnum = 1 ) / nullIf(sumIf(new_clients, mnum = 1 ), 0) AS m01,
+        sumIf(visits_3m, mnum = 2 ) / nullIf(sumIf(new_clients, mnum = 2 ), 0) AS m02,
+        sumIf(visits_3m, mnum = 3 ) / nullIf(sumIf(new_clients, mnum = 3 ), 0) AS m03,
+        sumIf(visits_3m, mnum = 4 ) / nullIf(sumIf(new_clients, mnum = 4 ), 0) AS m04,
+        sumIf(visits_3m, mnum = 5 ) / nullIf(sumIf(new_clients, mnum = 5 ), 0) AS m05,
+        sumIf(visits_3m, mnum = 6 ) / nullIf(sumIf(new_clients, mnum = 6 ), 0) AS m06,
+        sumIf(visits_3m, mnum = 7 ) / nullIf(sumIf(new_clients, mnum = 7 ), 0) AS m07,
+        sumIf(visits_3m, mnum = 8 ) / nullIf(sumIf(new_clients, mnum = 8 ), 0) AS m08,
+        sumIf(visits_3m, mnum = 9 ) / nullIf(sumIf(new_clients, mnum = 9 ), 0) AS m09,
+        sumIf(visits_3m, mnum = 10) / nullIf(sumIf(new_clients, mnum = 10), 0) AS m10,
+        sumIf(visits_3m, mnum = 11) / nullIf(sumIf(new_clients, mnum = 11), 0) AS m11,
+        sumIf(visits_3m, mnum = 12) / nullIf(sumIf(new_clients, mnum = 12), 0) AS m12,
+        sum(visits_3m) / nullIf(sum(new_clients), 0) AS m_year,
+        toFloat64(sum(new_clients)) AS nc_year
+    FROM metric
+    GROUP BY d_group, d_ord, d_fio
 )
--- ГОЧТЯ GROUPING SETS в ClickHouse: у колонки, НЕ входящей в текущий
--- grouping set, тип становится Nullable и значение приходит NULL (а не
--- дефолтом типа) — поэтому и подписи итоговых строк, и ORDER BY идут
--- через coalesce(); без него `doc_fio = ''` даёт NULL, подпись «ИТОГО»
--- не подставляется, а итоговая строка уезжает в конец группы.
-SELECT
-    if(coalesce(doc_group, '') = '', 'ВСЯ КЛИНИКА', doc_group) AS "Тип",
-    if(coalesce(doc_fio, '')   = '', 'ИТОГО',       doc_fio)   AS "Врач",
-    sumIf(visits_3m, mnum = 1)  / nullIf(sumIf(new_clients, mnum = 1),  0) AS "Янв",
-    sumIf(visits_3m, mnum = 2)  / nullIf(sumIf(new_clients, mnum = 2),  0) AS "Фев",
-    sumIf(visits_3m, mnum = 3)  / nullIf(sumIf(new_clients, mnum = 3),  0) AS "Мар",
-    sumIf(visits_3m, mnum = 4)  / nullIf(sumIf(new_clients, mnum = 4),  0) AS "Апр",
-    sumIf(visits_3m, mnum = 5)  / nullIf(sumIf(new_clients, mnum = 5),  0) AS "Май",
-    sumIf(visits_3m, mnum = 6)  / nullIf(sumIf(new_clients, mnum = 6),  0) AS "Июн",
-    sumIf(visits_3m, mnum = 7)  / nullIf(sumIf(new_clients, mnum = 7),  0) AS "Июл",
-    sumIf(visits_3m, mnum = 8)  / nullIf(sumIf(new_clients, mnum = 8),  0) AS "Авг",
-    sumIf(visits_3m, mnum = 9)  / nullIf(sumIf(new_clients, mnum = 9),  0) AS "Сен",
-    sumIf(visits_3m, mnum = 10) / nullIf(sumIf(new_clients, mnum = 10), 0) AS "Окт",
-    sumIf(visits_3m, mnum = 11) / nullIf(sumIf(new_clients, mnum = 11), 0) AS "Ноя",
-    sumIf(visits_3m, mnum = 12) / nullIf(sumIf(new_clients, mnum = 12), 0) AS "Дек",
-    sum(visits_3m) / nullIf(sum(new_clients), 0)                           AS "За год",
-    toFloat64(sum(new_clients))                                            AS "Новых клиентов за год"
-FROM metric
-GROUP BY GROUPING SETS ((doc_ord, doc_group, doc_fio), (doc_ord, doc_group), ())
+SELECT "Врач", "Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек", "За год", "Новых клиентов за год"
+FROM (
+    -- Строка-заголовок группы (см. РАСКЛАДКА в шапке).
+    SELECT
+        d_ord                 AS ord,
+        0                     AS is_doc,
+        upperUTF8(d_group)    AS "Врач",
+        CAST(NULL AS Nullable(Float64)) AS "Янв",
+        CAST(NULL AS Nullable(Float64)) AS "Фев",
+        CAST(NULL AS Nullable(Float64)) AS "Мар",
+        CAST(NULL AS Nullable(Float64)) AS "Апр",
+        CAST(NULL AS Nullable(Float64)) AS "Май",
+        CAST(NULL AS Nullable(Float64)) AS "Июн",
+        CAST(NULL AS Nullable(Float64)) AS "Июл",
+        CAST(NULL AS Nullable(Float64)) AS "Авг",
+        CAST(NULL AS Nullable(Float64)) AS "Сен",
+        CAST(NULL AS Nullable(Float64)) AS "Окт",
+        CAST(NULL AS Nullable(Float64)) AS "Ноя",
+        CAST(NULL AS Nullable(Float64)) AS "Дек",
+        CAST(NULL AS Nullable(Float64)) AS "За год",
+        sum(nc_year) AS "Новых клиентов за год"
+    FROM doctors
+    GROUP BY ord, d_group
+    UNION ALL
+    SELECT
+        d_ord, 1, d_fio,
+        m01, m02, m03, m04, m05, m06, m07, m08, m09, m10, m11, m12,
+        m_year,
+        nc_year
+    FROM doctors
+)
 ORDER BY
-    coalesce(doc_ord, 0) ASC,
-    (coalesce(doc_fio, '') != '') ASC,
+    ord ASC,
+    is_doc ASC,
     "Новых клиентов за год" DESC,
     "Врач" ASC
 SETTINGS query_plan_max_optimizations_to_apply = 100000
