@@ -15,6 +15,19 @@
 -- заполнены — это обычные счётчики клиентов, они складываются корректно,
 -- и сумма по группам сходится с общим числом новых клиентов месяца.
 
+-- НОЛЬ И ПУСТО — РАЗНЫЕ ВЕЩИ (добавлено 2026-09-24 вместе с градиентом):
+-- «0» = месяц загружен, но у этого врача не было ни одного нового
+-- клиента; ПУСТО = месяца ещё нет в данных вообще (визиты не загружены —
+-- например сен-дек 2026 при данных по август). Без этого различия
+-- незагруженные месяцы красились бы градиентом в «плохой» красный
+-- наравне с настоящими нулями, то есть таблица врала бы цветом. Маска
+-- считается в CTE loaded: месяц попадает в таблицу, только если в нём
+-- есть хотя бы один новый клиент ПО ВСЕЙ клинике. Граничный случай
+-- (месяц загружен, но новых клиентов в клинике ноль) даст пусто вместо
+-- нулевого столбца — на практике не встречается.
+-- В метрической карточке такой маски не нужно: там знаменатель проходит
+-- через nullIf, и незагруженные месяцы и так выходят пустыми.
+
 WITH
 v AS (
     SELECT card_number, month, doctor_name, visit_start
@@ -91,24 +104,31 @@ metric AS (
     LEFT JOIN doc_typed AS t ON p.pc_doctor = t.typed_doctor
     GROUP BY doc_group, doc_ord, doc_fio, mnum
 ),
+loaded AS (
+    -- Месяцы, реально присутствующие в данных выбранного года (см. шапку:
+    -- «НОЛЬ И ПУСТО — РАЗНЫЕ ВЕЩИ»).
+    SELECT groupUniqArray(mnum) AS loaded_mnums
+    FROM metric
+),
 doctors AS (
-    -- Одна строка = один врач: 12 месячных значений + год.
+    -- Одна строка = один врач: 12 месячных значений + год. Месяц, которого
+    -- нет в loaded, отдаём как NULL (пусто), а не как 0.
     SELECT
         doc_group AS d_group,
         doc_ord   AS d_ord,
         doc_fio   AS d_fio,
-        toFloat64(sumIf(new_clients, mnum = 1 )) AS m01,
-        toFloat64(sumIf(new_clients, mnum = 2 )) AS m02,
-        toFloat64(sumIf(new_clients, mnum = 3 )) AS m03,
-        toFloat64(sumIf(new_clients, mnum = 4 )) AS m04,
-        toFloat64(sumIf(new_clients, mnum = 5 )) AS m05,
-        toFloat64(sumIf(new_clients, mnum = 6 )) AS m06,
-        toFloat64(sumIf(new_clients, mnum = 7 )) AS m07,
-        toFloat64(sumIf(new_clients, mnum = 8 )) AS m08,
-        toFloat64(sumIf(new_clients, mnum = 9 )) AS m09,
-        toFloat64(sumIf(new_clients, mnum = 10)) AS m10,
-        toFloat64(sumIf(new_clients, mnum = 11)) AS m11,
-        toFloat64(sumIf(new_clients, mnum = 12)) AS m12,
+        if(has((SELECT loaded_mnums FROM loaded), 1 ), toFloat64(sumIf(new_clients, mnum = 1 )), CAST(NULL AS Nullable(Float64))) AS m01,
+        if(has((SELECT loaded_mnums FROM loaded), 2 ), toFloat64(sumIf(new_clients, mnum = 2 )), CAST(NULL AS Nullable(Float64))) AS m02,
+        if(has((SELECT loaded_mnums FROM loaded), 3 ), toFloat64(sumIf(new_clients, mnum = 3 )), CAST(NULL AS Nullable(Float64))) AS m03,
+        if(has((SELECT loaded_mnums FROM loaded), 4 ), toFloat64(sumIf(new_clients, mnum = 4 )), CAST(NULL AS Nullable(Float64))) AS m04,
+        if(has((SELECT loaded_mnums FROM loaded), 5 ), toFloat64(sumIf(new_clients, mnum = 5 )), CAST(NULL AS Nullable(Float64))) AS m05,
+        if(has((SELECT loaded_mnums FROM loaded), 6 ), toFloat64(sumIf(new_clients, mnum = 6 )), CAST(NULL AS Nullable(Float64))) AS m06,
+        if(has((SELECT loaded_mnums FROM loaded), 7 ), toFloat64(sumIf(new_clients, mnum = 7 )), CAST(NULL AS Nullable(Float64))) AS m07,
+        if(has((SELECT loaded_mnums FROM loaded), 8 ), toFloat64(sumIf(new_clients, mnum = 8 )), CAST(NULL AS Nullable(Float64))) AS m08,
+        if(has((SELECT loaded_mnums FROM loaded), 9 ), toFloat64(sumIf(new_clients, mnum = 9 )), CAST(NULL AS Nullable(Float64))) AS m09,
+        if(has((SELECT loaded_mnums FROM loaded), 10), toFloat64(sumIf(new_clients, mnum = 10)), CAST(NULL AS Nullable(Float64))) AS m10,
+        if(has((SELECT loaded_mnums FROM loaded), 11), toFloat64(sumIf(new_clients, mnum = 11)), CAST(NULL AS Nullable(Float64))) AS m11,
+        if(has((SELECT loaded_mnums FROM loaded), 12), toFloat64(sumIf(new_clients, mnum = 12)), CAST(NULL AS Nullable(Float64))) AS m12,
         toFloat64(sum(new_clients)) AS m_year
     FROM metric
     GROUP BY d_group, d_ord, d_fio
