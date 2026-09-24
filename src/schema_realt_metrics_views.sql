@@ -203,6 +203,14 @@ SELECT
         d.employee_id != '' AND pp.pp_department IS NOT NULL, pp.pp_department,
         NULL
     )                                                          AS visit_floor,
+    -- ГОЧТЯ (2026-09-24): ORDER BY без tie-break — у 98 клиентов из 8072
+    -- первый визит это НЕСКОЛЬКО визитов с одинаковым visit_start к РАЗНЫМ
+    -- врачам, и кому достанется visit_seq = 1, решается произвольно и
+    -- меняется от запуска к запуску. Для количества новых клиентов
+    -- (uniqExactIf(card_number, visit_seq = 1)) это неважно, но опираться
+    -- на visit_seq, чтобы узнать ВРАЧА первого визита, нельзя — см.
+    -- детерминированный argMin(..., (visit_start, doctor_name)) в
+    -- src/metabase_queries/realt_visits_3m_by_doctor.sql.
     row_number() OVER (PARTITION BY k.card_number ORDER BY k.visit_start) AS visit_seq
 FROM klientiks_operations k
 LEFT JOIN doctor_key d ON upperUTF8(trim(k.doctor)) = d.name_key
@@ -399,6 +407,28 @@ rolling_m AS (
     -- ВАЖНО: для последних 1-2 загруженных месяцев окно уходит в ещё не
     -- загруженные данные — метрика там будет ЗАНИЖЕНА не по факту, а
     -- потому что будущих визитов ещё нет в базе (см. комментарий к колонке).
+    -- !!! БАГ, НАЙДЕН 2026-09-24, ФИКС ПОКА НЕ ПРИМЕНЁН !!!
+    -- Окно ниже НЕ РАБОТАЕТ: алиас `acquisition_month AS month` затеняет
+    -- колонку `month` того же скоупа, и внутри countIf оба имени
+    -- разрешаются в acquisition_month. Условие превращается в
+    -- «M >= M AND M < M+3» = всегда истина, то есть считаются ВСЕ визиты
+    -- когорты за всю загруженную историю, а не за 3 месяца. Численно
+    -- проверено: колонка совпадает с count() без условия во все 20
+    -- месяцев 2025-2026 (январь 2026: 567 вместо честных 436, завышение
+    -- 20-30% везде, кроме 1-2 последних месяцев, где сходится случайно —
+    -- будущих визитов ещё нет в базе, поэтому баг и не был виден).
+    -- Затронута строка карточки 186 «Визиты на нового клиента (3 мес,
+    -- скользящее)» на дашборде id 8.
+    -- ФИКС (одна строка): переименовать алиас, например
+    --     SELECT acquisition_month AS cohort_month,
+    --            countIf(month >= acquisition_month
+    --                    AND month < acquisition_month + INTERVAL 3 MONTH) ...
+    --     GROUP BY acquisition_month
+    -- и поправить JOIN в финальном SELECT (r.month -> r.cohort_month).
+    -- НЕ применено сознательно: фикс меняет числа, которые владелец уже
+    -- просматривал, — ждёт его решения. Корректная реализация той же
+    -- идеи (с разрезом по врачам) — в
+    -- src/metabase_queries/realt_visits_3m_by_doctor.sql.
     SELECT
         acquisition_month AS month,
         countIf(month >= acquisition_month AND month < acquisition_month + INTERVAL 3 MONTH) AS new_client_visits_3m
