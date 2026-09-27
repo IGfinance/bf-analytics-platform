@@ -45,6 +45,7 @@ SELECT
     sales_amount                     AS "Продажи",
     spp_amount                       AS "СПП",
     wb_commission                    AS "Комиссия ВБ",
+    sales_corrections                AS "Корректировки продаж",
     payable_for_goods                AS "К перечислению за товар",
     logistics_direct                 AS "Логистика прямая",
     logistics_reverse                AS "Логистика обратная",

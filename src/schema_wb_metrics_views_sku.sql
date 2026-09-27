@@ -55,6 +55,58 @@
 -- "К перечислению" (что платит WB), на нём стоят сверки
 -- (compare_wb_sources.py, reconciliation_rules_wb.yaml). Себестоимость
 -- участвует только в gross_profit = payable_total + cogs.
+--
+-- ПРАВКА 2026-09-27 — sales_corrections (найдено при сверке дашборда с
+-- адаптерами, файл data-files/Сверка_WB_дашборд_vs_адаптеры_25_09_26.xlsx).
+-- Белый список cs_k_types покрывает НЕ ВСЕ payment_reason, у которых есть
+-- деньги в payable_to_seller: мимо него шли "Коррекция продаж",
+-- "Корректировка эквайринга" и "Услуга платная доставка" — то есть
+-- payable_for_goods молча занижался. Теперь дополнение к cs_k_types
+-- (ВСЁ, что не попало в белый список) считается отдельной метрикой
+-- sales_corrections и входит в payable_for_goods.
+--
+-- Знак берётся по document_type (Продажа плюсом, Возврат минусом), как у
+-- основных строк. Это НЕ то же, что делает внешний адаптер: он прибавляет
+-- такие строки со знаком "как лежит", не разворачивая Возвраты. Источник
+-- истины здесь — СВОДНЫЙ отчёт WB (wb_report_summary, колонка
+-- "К перечислению за товар"), и он считает именно по document_type, без
+-- фильтра по payment_reason (см. reconciliation_rules_wb.yaml). Проверено
+-- на всех 66 отчётах CloudSix: новая формула payable_for_goods сходится со
+-- сводным отчётом с diff = 0.00 на каждом отчёте, тогда как прежняя
+-- расходилась на 8 отчётах (до 269.78 ₽), а вариант адаптера — на 6
+-- (до 540.62 ₽, то есть хуже прежнего).
+--
+-- Что именно попало в дополнение и насколько это доказано сводным отчётом
+-- (сводный отчёт загружен только по CloudSix, отсюда разное покрытие):
+--   "Коррекция продаж"         13 943.96 ₽, 6 кабинетов — 7 отчётов покрыты
+--                              сводным, сходятся → доказано;
+--   "Корректировка эквайринга"      75.39 ₽, 5 кабинетов — 2 отчёта покрыты,
+--                              сходятся → доказано;
+--   "Услуга платная доставка"       30.08 ₽, только INOVO 2026-06 — сводного
+--                              отчёта по INOVO нет, НЕ проверено напрямую,
+--                              включено по общему правилу (в формуле сводного
+--                              отчёта фильтра по payment_reason нет вообще).
+-- Дополнение намеренно описано как "всё, что не в cs_k_types", а не списком
+-- этих трёх: новый payment_reason с деньгами, который WB добавит завтра,
+-- попадёт в метрику сам. Прежнее поведение (белый список) молча терял бы его —
+-- это худший режим отказа, чем лишняя строка в "Корректировках продаж".
+--
+-- Разбивка cs_k_types / дополнение сделана вместо простого снятия фильтра,
+-- чтобы не поехала wb_commission: она считается как
+-- payable_for_goods - retail_price_with_discount, и если в payable попадут
+-- строки корректировок, которых нет в retail, комиссия молча впитает их.
+-- Поэтому ядро (ah_sale/ah_ret) осталось как было, а корректировки живут
+-- отдельной колонкой — ровно как returns_corrections у Ozon
+-- (schema_ozon_metrics_views.sql). Сумма ядра и дополнения тождественно
+-- равна "по всем строкам" (проверено: 334 073 530.40 ₽ обоими способами),
+-- поэтому coalesce(..., '') в NOT IN обязателен — без него строки с
+-- payment_reason IS NULL выпали бы из обеих частей.
+
+-- ГОЧТЯ при накате на прод: `CREATE OR REPLACE VIEW` сбрасывает ВСЕ
+-- `COMMENT COLUMN` на этой VIEW — после правки тела прогоняйте все
+-- ALTER-команды из конца файла заново (8 из 24 колонок; остальные
+-- намеренно без комментариев, их пояснения — в schema_wb_metrics_views.sql).
+-- Подробнее — в заголовке schema_wb_metrics_views.sql.
 
 CREATE VIEW IF NOT EXISTS wb_metrics_by_sku_month AS
 WITH cs_k_types AS (
@@ -89,6 +141,15 @@ base AS (
             lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'продажа'), 0) AS ah_sale,
         coalesce(sumIf(payable_to_seller,
             lowerUTF8(trim(payment_reason)) IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'возврат'), 0) AS ah_ret,
+
+        -- дополнение к cs_k_types: всё, что не попало в белый список
+        -- ("Коррекция продаж", "Корректировка эквайринга", "Услуга платная
+        -- доставка" и любые новые типы, которые WB добавит). coalesce(...,'')
+        -- нужен, чтобы NULL-payment_reason не выпал из обеих частей разбивки.
+        coalesce(sumIf(payable_to_seller,
+            coalesce(lowerUTF8(trim(payment_reason)), '') NOT IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'продажа'), 0) AS corr_sale,
+        coalesce(sumIf(payable_to_seller,
+            coalesce(lowerUTF8(trim(payment_reason)), '') NOT IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'возврат'), 0) AS corr_ret,
 
         coalesce(sumIf(delivery_service_cost,
             payment_reason IN ('Логистика', 'Коррекция логистики') AND logistics_fines_corrections_type LIKE '%К клиенту%'), 0) AS direct_logistics,
@@ -157,7 +218,8 @@ SELECT
     (p_sale - p_ret)                                       AS sales_amount,
     ((t_sale - t_ret) - (p_sale - p_ret))                  AS spp_amount,
     ((ah_sale - ah_ret) - (t_sale - t_ret))                AS wb_commission,
-    (ah_sale - ah_ret)                                     AS payable_for_goods,
+    (corr_sale - corr_ret)                                 AS sales_corrections,
+    ((ah_sale - ah_ret) + (corr_sale - corr_ret))          AS payable_for_goods,
     (-direct_logistics)                                    AS logistics_direct,
     (-reverse_logistics)                                   AS logistics_reverse,
     (-sum_fines)                                           AS fines,
@@ -168,13 +230,13 @@ SELECT
     (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) AS wibes_discount,
     (-sum_promo)                                           AS promotion_cost,
     (
-      (ah_sale - ah_ret) + (-direct_logistics) + (-reverse_logistics)
+      (ah_sale - ah_ret) + (corr_sale - corr_ret) + (-direct_logistics) + (-reverse_logistics)
       + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
       + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
     )                                                       AS payable_total,
     (-coalesce(c.cogs_amount, 0))                           AS cogs,
     (
-      (ah_sale - ah_ret) + (-direct_logistics) + (-reverse_logistics)
+      (ah_sale - ah_ret) + (corr_sale - corr_ret) + (-direct_logistics) + (-reverse_logistics)
       + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
       + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
       - coalesce(c.cogs_amount, 0)
@@ -188,6 +250,8 @@ ORDER BY cabinet, sku, month;
 
 ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN sku 'Артикул продавца (supplier_article из wb_reports), пустые значения — ''без артикула''. Доп. измерение поверх той же формулы, что wb_metrics_by_cabinet_month.';
 ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN product_name 'Название товара — anyHeavy(product_name) по артикулу (самое частое встреченное название, на случай расхождений в написании за разные периоды).';
+ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN sales_corrections 'Корректировки продаж, ₽ — payable_to_seller по строкам, payment_reason которых НЕ входит в белый список cs_k_types ("Коррекция продаж", "Корректировка эквайринга", "Услуга платная доставка"). Знак по document_type: Продажа плюсом, Возврат минусом. Входит в payable_for_goods — до 2026-09-27 эти деньги терялись целиком. Внешний адаптер считает их иначе (прибавляет Возвраты, а не вычитает) и со сводным отчётом WB не сходится, наша формула сходится — см. заголовок файла.';
+ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN payable_for_goods 'К перечислению за товар = (payable_to_seller продажа минус возврат по cs_k_types) + sales_corrections. Тождественно равно "payable_to_seller по ВСЕМ строкам, Продажа минус Возврат" — то есть ровно формуле сводного отчёта WB (reconciliation_rules_wb.yaml, правило "К перечислению за товар"), diff = 0.00 на всех 66 отчётах CloudSix.';
 ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN cogs 'Себестоимость проданного товара, ₽, знак инвертирован (расход, как штрафы и логистика). Считается как (продажи минус возвраты) в штуках × себестоимость единицы за НЕДЕЛЮ операции из wb_cogs_weekly. Артикулы, которых нет в справочнике себестоимости, дают 0 — насколько цифра занижена, видно по cogs_qty_uncovered. В payable_total НЕ входит.';
 ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN gross_profit 'Валовая прибыль = payable_total + cogs (cogs отрицательный). Занижена ровно настолько, насколько не покрыт справочник себестоимости — смотрите cogs_qty_uncovered рядом.';
 ALTER TABLE wb_metrics_by_sku_month COMMENT COLUMN cogs_qty_covered 'Сколько проданных единиц (продажи минус возвраты) нашли себестоимость на свою неделю. Колонка счётная, суммируется по месяцам и артикулам свободно.';
