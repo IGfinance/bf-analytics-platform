@@ -44,12 +44,28 @@
 -- собственную комиссию — сумма уже сидит внутри wb_commission. Показывать
 -- её отдельной строкой — задваивать уже учтённые деньги.
 --
+-- ПРАВКА 2026-09-27: добавлена метрика sales_corrections («Корректировки
+-- продаж») и включена в payable_for_goods — белый список cs_k_types
+-- пропускал строки с деньгами ("Коррекция продаж" и др.), из-за чего
+-- payable_for_goods занижался и расходился со сводным отчётом WB.
+-- Подробности и доказательство — в заголовке schema_wb_metrics_views_sku.sql.
+--
 -- `ALTER TABLE ... COMMENT COLUMN` ниже применяется к VIEW (не к обычной
 -- таблице) — команды не проверены на реальной версии ClickHouse на проде,
 -- накатывайте по одной и проверяйте `SELECT comment FROM system.columns
 -- WHERE table = 'wb_metrics_by_cabinet_month'`. Если версия ClickHouse не
 -- поддерживает COMMENT COLUMN на VIEW — сам текст пояснений всё равно
 -- останется читаемым здесь, в теле ALTER-команд ниже.
+--
+-- ГОЧТЯ (сработала на realt_metrics_by_month 2026-09-24 и повторно здесь
+-- 2026-09-27): `CREATE OR REPLACE VIEW` СБРАСЫВАЕТ ВСЕ `COMMENT COLUMN`
+-- на этой VIEW. После любой правки тела VIEW на проде НАДО прогнать ВСЕ
+-- ALTER-команды из этого файла заново, а не только те, что относятся к
+-- изменённым колонкам, и проверить счётчик:
+--   SELECT countIf(comment != ''), count() FROM system.columns
+--   WHERE database = 'cloudsix' AND table = 'wb_metrics_by_cabinet_month';
+-- должно быть 22 из 22. То же и для wb_metrics_by_sku_month (там 8 из 24 —
+-- остальные колонки намеренно без комментариев, их пояснения живут здесь).
 
 CREATE VIEW IF NOT EXISTS wb_metrics_by_cabinet_month AS
 SELECT
@@ -59,6 +75,7 @@ SELECT
     sum(sales_amount)                AS sales_amount,
     sum(spp_amount)                  AS spp_amount,
     sum(wb_commission)               AS wb_commission,
+    sum(sales_corrections)           AS sales_corrections,
     sum(payable_for_goods)           AS payable_for_goods,
     sum(logistics_direct)            AS logistics_direct,
     sum(logistics_reverse)           AS logistics_reverse,
@@ -84,7 +101,8 @@ ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN sales_qty 'Количес
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN sales_amount 'Продажи в деньгах (wb_realized_amount), продажа минус возврат, только валидные payment_reason из cs_k_types. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN spp_amount 'СПП (скидка постоянного покупателя) = розничная цена с учётом СПП минус фактические продажи. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wb_commission 'Комиссия Wildberries = розничная цена с СПП минус сумма к перечислению продавцу. Формула — в wb_metrics_by_sku_month.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_for_goods 'К перечислению за товар (payable_to_seller), продажа минус возврат. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN sales_corrections 'Корректировки продаж — payable_to_seller по строкам вне белого списка cs_k_types ("Коррекция продаж", "Корректировка эквайринга", "Услуга платная доставка"), знак по document_type. Входит в payable_for_goods. Добавлена 2026-09-27, до этого терялась. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_for_goods 'К перечислению за товар (payable_to_seller), продажа минус возврат, ВКЛЮЧАЯ sales_corrections — тождественно формуле сводного отчёта WB (reconciliation_rules_wb.yaml). Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN logistics_direct 'Логистика "к клиенту" (прямая). Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN logistics_reverse 'Логистика обратная (не "к клиенту" или тип не указан). Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN fines 'Штрафы WB (total_fines), знак инвертирован (расход). Формула — в wb_metrics_by_sku_month.';
@@ -94,7 +112,7 @@ ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN acceptance_cost 'Плат
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN deductions 'Удержание (deductions) за вычетом строк, относящихся к продвижению. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN wibes_discount 'Скидка Wibes = компенсация минус расходы программы лояльности. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN promotion_cost '"Продвижение WB"/"Продвижение ВБ" объединены в одну метрику. Формула — в wb_metrics_by_sku_month.';
-ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. Себестоимость сюда НЕ входит — на этой метрике стоят сверки. Формула — в wb_metrics_by_sku_month.';
+ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods (с корректировками продаж) + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. Себестоимость сюда НЕ входит — на этой метрике стоят сверки. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN cogs 'Себестоимость проданного товара, ₽, знак инвертирован (расход). Сопоставляется поартикульно по неделе операции из wb_cogs_weekly. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN gross_profit 'Валовая прибыль = payable_total + cogs. Формула — в wb_metrics_by_sku_month.';
 ALTER TABLE wb_metrics_by_cabinet_month COMMENT COLUMN cogs_qty_covered 'Проданных единиц с известной себестоимостью. Формула — в wb_metrics_by_sku_month.';

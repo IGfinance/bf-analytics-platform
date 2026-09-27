@@ -39,7 +39,16 @@ rules:
       coalesce(sumIf(payable_to_seller, document_type = 'Продажа'), 0)
       - coalesce(sumIf(payable_to_seller, document_type = 'Возврат'), 0)
     tolerance: 0.01
-    notes: "Подтверждено на 6 парах отчётов, точное совпадение (diff=0)"
+    notes: >-
+      Подтверждено на 6 парах отчётов, точное совпадение (diff=0).
+      2026-09-27: это правило оказалось арбитром в споре о "Коррекции продаж".
+      Обратите внимание — фильтра по payment_reason здесь НЕТ: сводный отчёт WB
+      считает "К перечислению за товар" по ВСЕМ строкам, разделяя их только по
+      document_type. Перепроверено на всех 66 отчётах CloudSix: diff = 0.00 на
+      каждом. Метрика payable_for_goods в wb_metrics_by_sku_month до 2026-09-27
+      использовала белый список cs_k_types и потому расходилась с этим правилом
+      на 8 отчётах (до 269.78 ₽); теперь она включает sales_corrections и
+      тождественно равна этому выражению. Если правите одно — правьте и второе.
 
   - summary_column: "Стоимость логистики"
     ch_expression: "coalesce(sum(delivery_service_cost), 0)"
