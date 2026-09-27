@@ -4,6 +4,12 @@ Flask-Login поверх таблицы users в ClickHouse — заменяет
 пользователя, проекты, мультиплощадочность).
 """
 
+# Аннотации вида `str | None` требуют Python 3.10+. venv проекта на 3.13, но на
+# машинах разработки встречается системный 3.9 — без отложенных аннотаций модуль
+# там не импортируется вообще (2026-09-27 это заблокировало прогон
+# compare_wb_summaries.py). В рантайме ничего не меняет.
+from __future__ import annotations
+
 import logging
 
 from flask_login import LoginManager, UserMixin
