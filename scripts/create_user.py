@@ -2,19 +2,25 @@
 """
 Создаёт пользователя веб-формы (users) и, опционально, сразу выдаёт ему
 доступ к проекту (user_projects). Единственный способ завести пользователя —
-самостоятельной регистрации в форме нет.
+самостоятельной регистрации в форме нет. Пароль генерируется автоматически
+и отправляется пользователю на почту (см. src/mailer.py — письмо шлётся
+через локальный Postfix, для запуска не с VPS нужен SSH-туннель на 25-й
+порт: ssh -L 25:127.0.0.1:25 root@<host>).
 
 Пример:
     python3 scripts/create_user.py --email ilya@finance-black.ru --first-name Илья --last-name Гимаратов --project cloudsix
     python3 scripts/create_user.py --email new@finance-black.ru --first-name Имя --last-name Фамилия
+
+Не отправлять письмо (только вывести пароль в консоль):
+    python3 scripts/create_user.py --email new@finance-black.ru --first-name Имя --last-name Фамилия --no-email
 
 Обновить имя/фамилию существующему пользователю (пароль не трогает):
     python3 scripts/create_user.py --email ilya@finance-black.ru --first-name Илья --last-name Гимаратов --update
 """
 
 import argparse
-import getpass
 import logging
+import secrets
 import sys
 from pathlib import Path
 
@@ -26,11 +32,18 @@ ROOT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
 
 from ch_control import get_control_client  # noqa: E402
+from mailer import send_password_email  # noqa: E402
 
 load_dotenv(ROOT_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("create_user")
+
+PASSWORD_ALPHABET = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def generate_password(length: int = 12) -> str:
+    return "".join(secrets.choice(PASSWORD_ALPHABET) for _ in range(length))
 
 
 def next_id(client, table: str) -> int:
@@ -97,6 +110,7 @@ def main():
     parser.add_argument("--last-name", required=True)
     parser.add_argument("--project", help="slug проекта, к которому сразу дать доступ (опционально)")
     parser.add_argument("--update", action="store_true", help="обновить имя/фамилию, не создавая нового пользователя")
+    parser.add_argument("--no-email", action="store_true", help="не отправлять письмо с паролем, только вывести в консоль")
     args = parser.parse_args()
 
     try:
@@ -110,17 +124,21 @@ def main():
             user_id = update_user_name(client, args.email, args.first_name, args.last_name)
             log.info("Обновлено имя пользователя id=%s email=%s", user_id, args.email)
         else:
-            password = getpass.getpass("Пароль для нового пользователя: ")
-            password_confirm = getpass.getpass("Повторите пароль: ")
-            if password != password_confirm:
-                log.error("Пароли не совпадают")
-                sys.exit(1)
-            if len(password) < 8:
-                log.error("Пароль должен быть не короче 8 символов")
-                sys.exit(1)
-
+            password = generate_password()
             user_id = create_user(client, args.email, password, args.first_name, args.last_name)
             log.info("Создан пользователь id=%s email=%s", user_id, args.email)
+
+            if args.no_email:
+                log.info("Пароль (--no-email, письмо не отправлено): %s", password)
+            else:
+                full_name = f"{args.first_name} {args.last_name}".strip()
+                try:
+                    send_password_email(args.email, full_name, password)
+                    log.info("Письмо с паролем отправлено на %s", args.email)
+                except Exception:
+                    log.exception(
+                        "Не удалось отправить письмо с паролем — пароль: %s", password
+                    )
 
         if args.project:
             grant_project_access(client, user_id, args.project)
