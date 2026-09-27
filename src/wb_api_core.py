@@ -1,23 +1,38 @@
 #!/usr/bin/env python3
 """
-Загрузка отчёта о реализации WB через Statistics API
-(v5/supplier/reportDetailByPeriod) напрямую в ClickHouse — источник
-данных, альтернативный ручной выгрузке .xlsx (см. wb_core.py). Метод
-отдаёт только уже сформированные строки отчёта о реализации (закрытые
-операции) — открытых/незакрытых продаж в нём нет, доп. фильтрации по
-статусу не требуется.
+Загрузка отчёта о реализации WB через ФИНАНСОВОЕ API напрямую в ClickHouse —
+источник данных, альтернативный ручной выгрузке .xlsx (см. wb_core.py для
+детальных отчётов и wb_summary_core.py для сводных).
 
-У метода жёсткий rate-limit (у WB он периодически меняется, поэтому не
-хардкодим предположение — просто ретраим на HTTP 429 с честным ожиданием
-по Retry-After, если он есть, иначе растущей паузой).
+ПЕРЕПИСАНО 2026-09-27. Раньше модуль работал с методом Statistics API
+`GET /api/v5/supplier/reportDetailByPeriod`. WB его отключил — метод отдаёт
+HTTP 404 "This method is deprecated". Подробности, история вопроса и
+обоснование имён колонок/типов — в шапке schema_wb_api.sql, здесь не
+дублируем.
 
-Пагинация — курсором rrdid (rrd_id последней строки предыдущей страницы,
-0 для первой страницы), НЕ по датам внутри диапазона: один диапазон
-dateFrom/dateTo отдаётся книга за книгой, пока сервер не вернёт пустой
-список.
+Путь загрузки: list → detailed/{reportId}.
+  1. `list` за период отдаёт перечень отчётов (reportId + итоговые суммы по
+     каждому) — пишем в wb_api_report_summary.
+  2. для каждого reportId `detailed/{reportId}` отдаёт строки, страницами,
+     курсор — rrdId последней строки предыдущей страницы (проверено:
+     rrdId=<последний> возвращает строки со следующего id).
+Так строки сразу привязаны к конкретному отчёту, как в .xlsx, и не нужно
+угадывать семантику диапазона дат у `detailed` без reportId.
+
+ЛИМИТ 1 запрос в минуту (X-Ratelimit-Limit: 1). Между запросами модуль сам
+держит паузу MIN_REQUEST_INTERVAL — без неё каждый второй запрос гарантированно
+уходит в 429. Загрузка года по одному кабинету — это часы, это нормально.
 """
 
+# Аннотации вида `list | dict` и `str | None` требуют Python 3.10+, а тесты
+# этого модуля должны собираться и на 3.9 (venv проекта на 3.13, но на машинах
+# разработки встречается системный 3.9 — на нём уже не собираются
+# test_ingest_card.py и test_webapp_sources.py, см. их импорты wb_core).
+# Отложенные аннотации снимают проблему, ничего не меняя в рантайме.
+from __future__ import annotations
+
 import os
+import re
 import time
 from datetime import date, datetime
 
@@ -26,149 +41,219 @@ import requests
 
 from cabinet_credentials import get_wb_token
 
-API_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
-PAGE_LIMIT = 100_000
-MAX_RETRIES = 15
-DEFAULT_RETRY_WAIT = 65
+HOST = "https://finance-api.wildberries.ru"
+LIST_PATH = "/api/finance/v1/sales-reports/list"
+DETAILED_PATH = "/api/finance/v1/sales-reports/detailed/{report_id}"
 
-# Поля, которые кладём в отдельные колонки (см. schema_wb_api.sql).
-# Всё, что API вернёт сверх этого списка, уходит в extra_fields.
-KNOWN_FIELDS = {
-    "realizationreport_id", "date_from", "date_to", "create_dt", "currency_name",
-    "suppliercontract_code", "gi_id", "dlv_prc", "fix_tariff_date_from", "fix_tariff_date_to",
-    "subject_name", "nm_id", "brand_name", "sa_name", "ts_name", "barcode", "doc_type_name",
-    "quantity", "retail_price", "retail_amount", "sale_percent", "commission_percent",
-    "office_name", "supplier_oper_name", "order_dt", "sale_dt", "rr_dt", "shk_id",
-    "retail_price_withdisc_rub", "delivery_amount", "return_amount", "delivery_rub",
-    "gi_box_type_name", "product_discount_for_report", "supplier_promo", "ppvz_spp_prc",
-    "ppvz_kvw_prc_base", "ppvz_kvw_prc", "sup_rating_prc_up", "is_kgvp_v2",
-    "ppvz_sales_commission", "ppvz_for_pay", "ppvz_reward", "acquiring_fee", "acquiring_percent",
-    "payment_processing", "acquiring_bank", "ppvz_vw", "ppvz_vw_nds", "ppvz_office_name",
-    "ppvz_office_id", "ppvz_supplier_id", "ppvz_supplier_name", "ppvz_inn",
-    "declaration_number", "bonus_type_name", "sticker_id", "site_country", "srv_dbs",
-    "penalty", "additional_payment", "rebill_logistic_cost", "storage_fee", "deduction",
-    "acceptance", "assembly_id", "srid", "report_type", "is_legal_entity", "trbx_id",
-    "installment_cofinancing_amount", "wibes_wb_discount_percent", "cashback_amount",
-    "cashback_discount", "cashback_commission_change", "order_uid", "payment_schedule",
-    "delivery_method",
+# Ровно то, что разрешает X-Ratelimit-Limit, плюс запас: лимит считается
+# сервером по своим часам, и запрос "точно через 60с" стабильно ловит 429.
+MIN_REQUEST_INTERVAL = 65.0
+PAGE_LIMIT = 10_000
+MAX_RETRIES = 10
+DEFAULT_RETRY_WAIT = 65.0
+# Больше этого — не обычный rate-limit, а длительная блокировка метода
+# (в сентябре 2026 уже ловили ~16 дней после одного тяжёлого запроса).
+# Ждать в цикле бессмысленно, поднимаем исключение.
+LONG_BLOCK_THRESHOLD = 300.0
+
+DATE, DATETIME, INT, FLOAT, BOOL, STR = "date", "datetime", "int", "float", "bool", "str"
+
+# Единый источник правды по типам полей detailed. Имена — snake_case,
+# camelCase из API приводится camel_to_snake(). Состав сверяется с
+# schema_wb_api.sql тестом tests/test_wb_api_schema.py — если WB добавит
+# поле, тест не упадёт (поле уйдёт в extra_fields), а вот расхождение между
+# этим словарём и SQL-схемой он поймает.
+DETAILED_FIELDS = {
+    "report_id": INT, "report_type": INT, "date_from": DATE, "date_to": DATE,
+    "create_date": DATE, "currency": STR,
+    "rrd_id": INT,
+    "subject_name": STR, "nm_id": INT, "brand_name": STR, "vendor_code": STR,
+    "title": STR, "tech_size": STR, "sku": STR,
+    "doc_type_name": STR, "seller_oper_name": STR, "quantity": INT,
+    "order_dt": DATETIME, "sale_dt": DATETIME, "rr_date": DATE,
+    "shk_id": INT, "order_id": INT, "order_uid": STR, "srid": STR,
+    "retail_price": FLOAT, "retail_amount": FLOAT, "retail_price_with_disc": FLOAT,
+    "for_pay": FLOAT, "ppvz_sales_commission": FLOAT, "ppvz_reward": FLOAT,
+    "acquiring_fee": FLOAT, "vw": FLOAT, "vw_nds": FLOAT,
+    "delivery_service": FLOAT, "penalty": FLOAT, "additional_payment": FLOAT,
+    "rebill_logistic_cost": FLOAT, "rebill_logistic_org": STR,
+    "paid_storage": FLOAT, "deduction": FLOAT, "paid_acceptance": FLOAT,
+    "installment_cofinancing_amount": FLOAT, "cashback_amount": FLOAT,
+    "cashback_discount": FLOAT, "cashback_commission_change": FLOAT,
+    "sale_percent": FLOAT, "commission_percent": FLOAT, "dlv_prc": FLOAT,
+    "spp": FLOAT, "kvw_base": FLOAT, "kvw": FLOAT, "sup_rating_up": FLOAT,
+    "is_kgvp_v2": FLOAT, "acquiring_percent": FLOAT,
+    "product_discount_for_report": FLOAT, "seller_promo": FLOAT,
+    "wibes_discount_percent": FLOAT, "warehouse_logistics_coeff": FLOAT,
+    "seller_promo_id": INT, "seller_promo_discount": FLOAT,
+    "loyalty_id": INT, "loyalty_discount": FLOAT,
+    "uuid_promocode": STR, "sale_price_promocode_discount_prc": FLOAT,
+    "article_substitution": STR, "sale_price_affiliated_discount_prc": FLOAT,
+    "sale_price_wholesale_discount_prc": FLOAT,
+    "delivery_amount": INT, "return_amount": INT, "delivery_method": STR,
+    "office_name": STR, "gi_id": INT, "gi_box_type_name": STR,
+    "fix_tariff_date_from": DATETIME, "fix_tariff_date_to": DATETIME,
+    "ppvz_office_name": STR, "ppvz_office_id": INT,
+    "ppvz_supplier_name": STR, "ppvz_supplier_inn": STR,
+    "trbx_id": STR, "sticker_id": STR, "country": STR,
+    "declaration_number": STR, "bonus_type_name": STR,
+    "payment_processing": STR, "acquiring_bank": STR, "payment_schedule": FLOAT,
+    "srv_dbs": BOOL, "is_b2b": BOOL, "paid_with_social_certificate": BOOL,
+    "b2b_customer_tin": STR,
 }
 
-DATE_FIELDS = {"date_from", "date_to", "create_dt", "rr_dt"}
-DATETIME_FIELDS = {"fix_tariff_date_from", "fix_tariff_date_to", "order_dt", "sale_dt"}
-INT_FIELDS = {
-    "realizationreport_id", "gi_id", "nm_id", "shk_id", "ppvz_office_id", "ppvz_supplier_id",
-    "assembly_id", "report_type", "payment_schedule", "quantity", "delivery_amount", "return_amount",
+SUMMARY_FIELDS = {
+    "report_id": INT, "report_type": INT, "seller_finance_name": STR,
+    "date_from": DATE, "date_to": DATE, "create_date": DATE, "currency": STR,
+    "retail_amount_sum": FLOAT, "for_pay_sum": FLOAT, "avg_sale_percent": FLOAT,
+    "delivery_service_sum": FLOAT, "paid_storage_sum": FLOAT,
+    "paid_acceptance_sum": FLOAT, "deduction_sum": FLOAT, "penalty_sum": FLOAT,
+    "additional_payment_sum": FLOAT, "cashback_amount_sum": FLOAT,
+    "cashback_discount_sum": FLOAT, "cashback_commission_change_sum": FLOAT,
+    "payment_schedule": FLOAT, "bank_payment_sum": FLOAT,
 }
-BOOL_FIELDS = {"srv_dbs", "is_legal_entity"}
+
+DETAILED_COLUMNS = ["cabinet"] + sorted(DETAILED_FIELDS) + ["extra_fields"]
+SUMMARY_COLUMNS = ["cabinet"] + sorted(SUMMARY_FIELDS) + ["extra_fields"]
+
+_CAMEL_1 = re.compile(r"(?<=[a-z0-9])([A-Z])")
+_CAMEL_2 = re.compile(r"(?<=[A-Z])([A-Z][a-z])")
 
 
-def _coerce(field, value):
-    if value in (None, ""):
+def camel_to_snake(name: str) -> str:
+    """rrdId -> rrd_id, forPay -> for_pay, isKgvpV2 -> is_kgvp_v2.
+
+    Два правила вместо одного: первое рвёт границу строчная→прописная,
+    второе — конец аббревиатуры перед новым словом (ABCDef -> abc_def).
+    """
+    return _CAMEL_2.sub(r"_\1", _CAMEL_1.sub(r"_\1", name)).lower()
+
+
+def coerce(kind: str, value):
+    """Приведение значения из JSON к типу колонки ClickHouse.
+
+    Пустая строка трактуется как NULL, а не как 0/'': WB отдаёт "" и для
+    незаполненных дат ("fixTariffDateFrom": ""), и для незаполненных строк.
+    Для денег важно, что они приходят СТРОКАМИ ("3058674.41") — их надо
+    именно парсить, молча положить в Float64 не получится.
+    """
+    if value is None or value == "":
         return None
-    if field in DATE_FIELDS:
-        try:
-            return datetime.strptime(value[:10], "%Y-%m-%d").date()
-        except (ValueError, TypeError):
-            return None
-    if field in DATETIME_FIELDS:
-        try:
-            return datetime.strptime(value.replace("Z", "").split(".")[0].split("+")[0], "%Y-%m-%dT%H:%M:%S")
-        except (ValueError, TypeError, AttributeError):
-            return None
-    if field in INT_FIELDS:
-        try:
-            return int(value)
-        except (ValueError, TypeError):
-            return None
-    if field in BOOL_FIELDS:
+    if kind is STR:
+        return str(value)
+    if kind is BOOL:
+        if isinstance(value, str):
+            return 1 if value.lower() in ("true", "1", "yes") else 0
         return 1 if value else 0
-    return value
+    if kind is DATE:
+        try:
+            return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
+    if kind is DATETIME:
+        raw = str(value).replace("Z", "").split(".")[0].split("+")[0]
+        try:
+            return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S")
+        except (ValueError, TypeError):
+            try:
+                return datetime.strptime(raw[:10], "%Y-%m-%d")
+            except (ValueError, TypeError):
+                return None
+    if kind is INT:
+        try:
+            return int(float(value))
+        except (ValueError, TypeError):
+            return None
+    if kind is FLOAT:
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+    return str(value)
 
 
-def _rate_limit_wait_seconds(resp, default: float) -> float:
-    """X-Ratelimit-Retry/-Reset у WB — секунды (проверено эмпирически: два
-    замера с разницей 9463с в реальном времени показали ровно такую же
-    разницу в заголовке — значит это честный таймер до фиксированного
-    момента, без домыслов про миллисекунды).
+def raw_to_record(raw: dict, cabinet: str, spec: dict) -> tuple[dict, list[str]]:
+    """Возвращает (запись, список полей, не попавших в spec).
 
-    ВАЖНО: если значение больше пары минут — это не обычный 1-req/min
-    лимит (у него Retry ~60с), а какая-то более серьёзная блокировка
-    (у нас однажды словили ~16 дней после одного запроса с limit=100000
-    на почти годовой диапазон — см. историю чата/памятку по инциденту).
-    В этом случае ждать смысла нет: поднимаем исключение, чтобы вызывающий
-    код не завис на много часов в цикле ретраев."""
+    Неизвестные поля НЕ отбрасываются: они уходят в extra_fields и попадают
+    в лог, чтобы добавленное WB поле было видно, а не потеряно молча.
+    """
+    record = {"cabinet": cabinet}
+    extra, unmapped = {}, []
+    for key, value in raw.items():
+        col = camel_to_snake(key)
+        kind = spec.get(col)
+        if kind is None:
+            unmapped.append(key)
+            if value not in (None, ""):
+                extra[key] = str(value)
+        else:
+            record[col] = coerce(kind, value)
+    record["extra_fields"] = extra
+    return record, unmapped
+
+
+class _Pacer:
+    """Держит паузу между запросами под лимит 1 req/min."""
+
+    def __init__(self, interval: float = MIN_REQUEST_INTERVAL, log=print):
+        self.interval = interval
+        self.log = log
+        self._last = 0.0
+
+    def wait(self):
+        if self._last:
+            left = self.interval - (time.monotonic() - self._last)
+            if left > 0:
+                self.log(f"    пауза {left:.0f}с под лимит 1 запрос/мин")
+                time.sleep(left)
+        self._last = time.monotonic()
+
+
+def _retry_wait(resp, default: float) -> float:
     raw = resp.headers.get("X-Ratelimit-Retry") or resp.headers.get("Retry-After")
-    if raw is None:
-        return default
     try:
-        value = float(raw)
+        value = float(raw) if raw is not None else default
     except ValueError:
-        return default
-    if value > 300:  # обычный 1-req/min лимит ждёт секунды, не минуты
+        value = default
+    if value > LONG_BLOCK_THRESHOLD:
         raise RuntimeError(
-            f"WB API: X-Ratelimit-Retry={value:.0f}с — это не обычный лимит "
-            f"(ожидались бы секунды/десятки секунд). Похоже на длительную "
-            f"блокировку метода, а не rate-limit — ждать в цикле бессмысленно."
+            f"WB API: retry={value:.0f}с — это не обычный лимит (ожидались бы "
+            f"секунды/десятки секунд), а длительная блокировка метода. "
+            f"Ждать в цикле бессмысленно, прерываемся."
         )
-    return value + 2.0  # небольшой запас
+    return value + 2.0
 
 
-def _request_page(token: str, date_from: str, date_to: str, rrdid: int, log=print) -> list:
-    params = {"dateFrom": date_from, "dateTo": date_to, "limit": PAGE_LIMIT, "rrdid": rrdid}
-    headers = {"Authorization": token}
-
+def _post(token: str, path: str, body: dict, pacer: _Pacer, log=print) -> list | dict:
+    url = HOST + path
+    headers = {"Authorization": token, "Content-Type": "application/json"}
     for attempt in range(MAX_RETRIES):
-        resp = requests.get(API_URL, params=params, headers=headers, timeout=120)
+        pacer.wait()
+        resp = requests.post(url, json=body, headers=headers, timeout=180)
         if resp.status_code == 429:
-            wait = _rate_limit_wait_seconds(resp, DEFAULT_RETRY_WAIT)
-            log(f"    429 (rate limit), жду {wait:.0f}с (попытка {attempt + 1}/{MAX_RETRIES})")
+            wait = _retry_wait(resp, DEFAULT_RETRY_WAIT)
+            log(f"    429, жду {wait:.0f}с (попытка {attempt + 1}/{MAX_RETRIES})")
             time.sleep(wait)
             continue
-        resp.raise_for_status()
+        if resp.status_code == 404 and "deprecated" in resp.text.lower():
+            raise RuntimeError(
+                f"WB API: метод {path} помечен deprecated — WB снова сменил "
+                f"контракт. Ответ: {resp.text[:300]}"
+            )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"WB API {resp.status_code} на {path}: {resp.text[:500]}")
         return resp.json() or []
-    raise RuntimeError(f"WB API: не удалось получить страницу (rrdid={rrdid}) после {MAX_RETRIES} попыток (429)")
+    raise RuntimeError(f"WB API: {path} не ответил за {MAX_RETRIES} попыток (429)")
 
 
-def fetch_pages(token: str, date_from: str, date_to: str, log=print):
-    """Генератор страниц (списков сырых строк) за период [date_from, date_to] (YYYY-MM-DD).
-
-    Отдаёт по странице сразу после получения (а не всё одним списком в конце) —
-    и чтобы не буферить сотни тысяч строк в памяти на многочасовой пагинации,
-    и чтобы вызывающий код мог сразу писать каждую страницу в ClickHouse и не
-    терять уже полученные данные, если процесс прервётся на следующей странице."""
-    rrdid = 0
-    while True:
-        page = _request_page(token, date_from, date_to, rrdid, log=log)
-        log(f"    WB API: страница с rrdid={rrdid}, строк: {len(page)}")
-        if not page:
-            break
-        yield page
-        rrdid = page[-1]["rrd_id"]
-        if len(page) < PAGE_LIMIT:
-            break
-
-
-def row_to_record(raw: dict, cabinet: str, date_from: date, date_to: date) -> dict:
-    record = {"cabinet": cabinet, "source_date_from": date_from, "source_date_to": date_to}
-    extra = {}
-    for key, value in raw.items():
-        if key == "rrd_id":
-            record["rrd_id"] = int(value)
-        elif key in KNOWN_FIELDS:
-            record[key] = _coerce(key, value)
-        else:
-            if value is not None:
-                extra[key] = str(value)
-    record["extra_fields"] = extra
-    return record
-
-
-def get_client():
+def get_client(database: str | None = None):
     host = os.environ["CLICKHOUSE_HOST"]
     port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
     user = os.environ.get("CLICKHOUSE_USER", "default")
     password = os.environ["CLICKHOUSE_PASSWORD"]
-    database = os.environ.get("CLICKHOUSE_DATABASE", "default")
+    if database is None:
+        database = os.environ.get("CLICKHOUSE_DATABASE", "default")
     secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
     return clickhouse_connect.get_client(
         host=host, port=port, username=user, password=password,
@@ -176,23 +261,115 @@ def get_client():
     )
 
 
-ROW_COLUMNS = (
-    ["cabinet", "rrd_id"] + sorted(KNOWN_FIELDS) + ["extra_fields", "source_date_from", "source_date_to"]
-)
+def _log_unmapped(client, cabinet: str, endpoint: str, report_id: int, fields: set[str], log=print):
+    if not fields:
+        return
+    log(f"    ВНИМАНИЕ: поля вне схемы ({endpoint}): {sorted(fields)} — ушли в extra_fields")
+    client.insert(
+        "wb_api_unmapped_fields_log",
+        [[cabinet, endpoint, report_id, f] for f in sorted(fields)],
+        column_names=["cabinet", "endpoint", "report_id", "raw_field"],
+    )
 
 
-def ingest_period(cabinet: str, date_from: date, date_to: date, log=print) -> dict:
+def fetch_report_list(token: str, date_from: date, date_to: date,
+                      pacer: _Pacer, log=print) -> list[dict]:
+    """Метод list: перечень отчётов за период с итоговыми суммами."""
+    body = {"dateFrom": date_from.isoformat(), "dateTo": date_to.isoformat()}
+    data = _post(token, LIST_PATH, body, pacer, log=log)
+    if not isinstance(data, list):
+        raise RuntimeError(f"WB API list: ожидался список, пришло {type(data).__name__}: {str(data)[:300]}")
+    return data
+
+
+def fetch_detailed_pages(token: str, report_id: int, pacer: _Pacer, log=print):
+    """Генератор страниц строк одного отчёта. Курсор — rrdId последней строки.
+
+    Отдаём страницу сразу, а не копим всё в памяти: на лимите 1 запрос/мин
+    загрузка идёт долго, и прерванный процесс не должен терять уже
+    полученные страницы.
+    """
+    cursor = 0
+    seen = 0
+    while True:
+        body = {"limit": PAGE_LIMIT, "rrdId": cursor}
+        page = _post(token, DETAILED_PATH.format(report_id=report_id), body, pacer, log=log)
+        if not isinstance(page, list):
+            raise RuntimeError(f"WB API detailed: ожидался список, пришло {str(page)[:300]}")
+        log(f"    отчёт {report_id}: страница с rrdId={cursor}, строк {len(page)}")
+        if not page:
+            break
+        yield page
+        seen += len(page)
+        new_cursor = max(int(r["rrdId"]) for r in page)
+        if new_cursor <= cursor:
+            raise RuntimeError(
+                f"WB API detailed: курсор не растёт (rrdId={new_cursor} <= {cursor}) — "
+                f"прерываемся, чтобы не крутить бесконечный цикл"
+            )
+        cursor = new_cursor
+        if len(page) < PAGE_LIMIT:
+            break
+
+
+def ingest_period(cabinet: str, date_from: date, date_to: date, log=print,
+                  database: str | None = None, with_detailed: bool = True) -> dict:
+    """Грузит отчёты WB за период: сводку по каждому отчёту (list) и,
+    если with_detailed, все их строки (detailed/{reportId}).
+
+    Идемпотентно: обе таблицы — ReplacingMergeTree (по cabinet+report_id и
+    cabinet+rrd_id), повторный прогон того же периода перезапишет строки,
+    а не задвоит их.
+    """
     token = get_wb_token(cabinet)
-    client = get_client()
+    client = get_client(database=database)
+    pacer = _Pacer(log=log)
+
+    log(f"WB finance API: {cabinet}, период {date_from}..{date_to}")
+    reports = fetch_report_list(token, date_from, date_to, pacer, log=log)
+    log(f"  Отчётов за период: {len(reports)}")
+    if not reports:
+        log("  Отчётов нет — грузить нечего.")
+        return {"reports": 0, "summary_rows": 0, "detailed_rows": 0}
+
+    summary_records, unmapped_summary = [], set()
+    for raw in reports:
+        rec, unmapped = raw_to_record(raw, cabinet, SUMMARY_FIELDS)
+        summary_records.append(rec)
+        unmapped_summary.update(unmapped)
+    client.insert(
+        "wb_api_report_summary",
+        [[r.get(c) for c in SUMMARY_COLUMNS] for r in summary_records],
+        column_names=SUMMARY_COLUMNS,
+    )
+    log(f"  Загружено {len(summary_records)} строк в wb_api_report_summary.")
+    _log_unmapped(client, cabinet, "list", 0, unmapped_summary, log=log)
+
+    for r in summary_records:
+        log(f"    отчёт {r['report_id']} (тип {r.get('report_type')}): "
+            f"к перечислению {r.get('for_pay_sum')}, выплата {r.get('bank_payment_sum')}")
+
+    if not with_detailed:
+        return {"reports": len(reports), "summary_rows": len(summary_records), "detailed_rows": 0}
 
     total = 0
-    for page in fetch_pages(token, date_from.isoformat(), date_to.isoformat(), log=log):
-        records = [row_to_record(raw, cabinet, date_from, date_to) for raw in page]
-        data = [[row.get(col) for col in ROW_COLUMNS] for row in records]
-        client.insert("wb_api_realization", data, column_names=ROW_COLUMNS)
-        total += len(data)
-        log(f"  Загружено {len(data)} строк в wb_api_realization (всего: {total}).")
+    for rec in summary_records:
+        report_id = rec["report_id"]
+        unmapped_detailed = set()
+        for page in fetch_detailed_pages(token, report_id, pacer, log=log):
+            records = []
+            for raw in page:
+                row, unmapped = raw_to_record(raw, cabinet, DETAILED_FIELDS)
+                records.append(row)
+                unmapped_detailed.update(unmapped)
+            client.insert(
+                "wb_api_realization",
+                [[r.get(c) for c in DETAILED_COLUMNS] for r in records],
+                column_names=DETAILED_COLUMNS,
+            )
+            total += len(records)
+            log(f"      записано {len(records)} строк (всего {total})")
+        _log_unmapped(client, cabinet, "detailed", report_id, unmapped_detailed, log=log)
 
-    if total == 0:
-        log("  WB API: строк за период не найдено.")
-    return {"rows": total}
+    log(f"  Итого строк детализации: {total}")
+    return {"reports": len(reports), "summary_rows": len(summary_records), "detailed_rows": total}
