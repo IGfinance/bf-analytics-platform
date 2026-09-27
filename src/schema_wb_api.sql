@@ -25,8 +25,31 @@
 -- отчёту, как в .xlsx, и не нужно угадывать семантику диапазона дат.
 --
 -- ЛИМИТ: 1 запрос в минуту (X-Ratelimit-Limit: 1). Это не опечатка и не
--- временная мера — планируйте загрузку исходя из этого: одна неделя
--- CloudSix = 2 отчёта × несколько страниц ≈ 5-10 минут.
+-- временная мера — планируйте загрузку исходя из этого. На практике
+-- (проверено 2026-09-27) недельный отчёт CloudSix — 9574 строки, и при
+-- PAGE_LIMIT=10000 он выкачивается ОДНИМ запросом, то есть неделя = 1 запрос
+-- на list + по 1 на каждый из двух отчётов ≈ 3 минуты.
+--
+-- ДАННЫЕ СОШЛИСЬ С РУЧНОЙ ВЫГРУЗКОЙ (проверено 2026-09-27 на отчёте
+-- 813819623, CloudSix, неделя 2026-08-10..16 — он есть и в API, и в
+-- wb_reports из .xlsx):
+--   * строк: 9574 из API против 9574 в wb_reports;
+--   * суммы: payable_to_seller/for_pay 2 165 674.87, wb_realized_amount/
+--     retail_amount 3 144 004.74, retail_price_with_discount 3 814 608.43,
+--     qty/quantity 13 230, логистика 111 646.82, штрафы 75.53, хранение
+--     2 761.00, приёмка 40.00, удержания 723 213.80 — все девять совпали
+--     до копейки;
+--   * разбивка по 14 типам операций (sellerOperName ↔ payment_reason):
+--     совпали и количество строк, и деньги, и штуки в КАЖДОМ типе, а не
+--     только в итоге. Названия типов совпадают посимвольно;
+--   * 9574 уникальных rrdId на 9574 строки, даты строго внутри недели.
+-- То есть новое API — полноценная замена ручной выгрузке, а не источник
+-- «примерно похожих» цифр.
+--
+-- Сводки (метод list) сошлись с wb_report_summary тем же порядком: JOIN по
+-- report_id = report_number, все 8 сопоставленных показателей по обоим
+-- отчётам недели дали ровно 0.00 (проверено прямым SQL на проде 2026-09-27,
+-- не только скриптом).
 --
 -- ИМЕНА КОЛОНОК. API отдаёт camelCase (rrdId, forPay, paidStorage), в
 -- проекте везде snake_case. Колонки названы механическим преобразованием
@@ -70,7 +93,7 @@ CREATE TABLE IF NOT EXISTS wb_api_realization
     rrd_id                               Int64,    -- уникальный id строки отчёта у WB, ключ дедупликации
 
     -- шапка отчёта (дублируется в каждой строке, как её отдаёт API)
-    report_id                            Int64,
+    report_id                            UInt64,   -- UInt64, а НЕ Int64: ровно как report_number в wb_report_summary/wb_reports, иначе ClickHouse отказывается джойнить ключи ("no supertype for UInt64, Int64") — поймано на живом JOIN 2026-09-27
     report_type                          Nullable(Int32),   -- 1 — основной, 2 — по выкупам
     date_from                            Nullable(Date),
     date_to                              Nullable(Date),
@@ -202,7 +225,7 @@ ORDER BY (cabinet, rrd_id);
 CREATE TABLE IF NOT EXISTS wb_api_report_summary
 (
     cabinet                              String,
-    report_id                            Int64,
+    report_id                            UInt64,   -- UInt64, а НЕ Int64: ровно как report_number в wb_report_summary/wb_reports, иначе ClickHouse отказывается джойнить ключи ("no supertype for UInt64, Int64") — поймано на живом JOIN 2026-09-27
     report_type                          Nullable(Int32),   -- 1 — основной, 2 — по выкупам
     seller_finance_name                  Nullable(String),  -- юрлицо/кабинет так, как его называет WB
     date_from                            Nullable(Date),
@@ -244,7 +267,7 @@ ORDER BY (cabinet, report_id);
 CREATE TABLE IF NOT EXISTS wb_api_summary_reconciliation
 (
     cabinet         String,
-    report_id       Int64,
+    report_id       UInt64,            -- см. заметку про UInt64 у wb_api_report_summary
     metric          String,             -- имя пары из METRICS в compare_wb_summaries.py
     xlsx_value      Nullable(Float64),  -- из wb_report_summary (ручная выгрузка)
     api_value       Nullable(Float64),  -- из wb_api_report_summary (метод list)
@@ -267,7 +290,7 @@ CREATE TABLE IF NOT EXISTS wb_api_unmapped_fields_log
     seen_at     DateTime DEFAULT now(),
     cabinet     String,
     endpoint    String,   -- 'list' | 'detailed'
-    report_id   Int64,
+    report_id   UInt64,
     raw_field   String
 )
 ENGINE = MergeTree

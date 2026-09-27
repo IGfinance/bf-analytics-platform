@@ -47,7 +47,7 @@ def columns_of(table: str) -> dict[str, str]:
 
 CH_TO_KIND = {
     "String": STR, "Nullable(String)": STR,
-    "Int64": INT, "Nullable(Int64)": INT, "Nullable(Int32)": INT,
+    "Int64": INT, "UInt64": INT, "Nullable(Int64)": INT, "Nullable(Int32)": INT,
     "Nullable(Float64)": FLOAT,
     "Nullable(Date)": DATE, "Nullable(DateTime)": DATETIME,
     "Nullable(UInt8)": BOOL,
