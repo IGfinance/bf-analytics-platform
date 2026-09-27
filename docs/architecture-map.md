@@ -46,7 +46,8 @@ CLI-скрипты (разовые/периодические загрузки),
 |---|---|---|---|
 | Детальный отчёт WB (.xlsx) | `ingest_wb.py` / веб-форма | `wb_core.ingest_files` | `wb_reports` |
 | Сводный отчёт WB (.xlsx) | `ingest_wb.py` / веб-форма | `wb_summary_core.ingest_files` | `wb_report_summary` |
-| Реализации WB (API) | `ingest_wb_api.py` | `wb_api_core.*` | `wb_api_realization` — **0 строк, загрузка не запускалась** (см. бэклог `docs/vision.md`) |
+| Реализации WB (API, детализация) | `ingest_wb_api.py` | `wb_api_core.ingest_period` | `wb_api_realization` — **0 строк, загрузка ещё не прогонялась**. Метод переписан 2026-09-27: старый `v5/supplier/reportDetailByPeriod` отключён WB, теперь `finance-api.wildberries.ru` → `/api/finance/v1/sales-reports/detailed/{reportId}` |
+| Сводки отчётов WB (API) | `ingest_wb_api.py --summary-only` | `wb_api_core.fetch_report_list` | `wb_api_report_summary` — тот же набор показателей, что в сводном .xlsx, но по API (`/api/finance/v1/sales-reports/list`); ключ `report_id` = `report_number`, поля сверены до копейки 2026-09-27 |
 | Отчёт Ozon «Начисления» (.xlsx) | `ingest_ozon.py` | `ozon_core.ingest_files` | `ozon_reports` |
 | Финансовые операции Ozon (API, **исторические**) | `ingest_ozon_api.py` | `ozon_api_core.ingest_period` | `ozon_api_transactions` — источник (`/v3/finance/transaction/list`) отключён Ozon в 2026 г., новых данных не будет; таблица оставлена как архив, замена — три строки ниже |
 | Поартикульная выручка Ozon (API) | `ingest_ozon_realization.py` | `ozon_realization_core.ingest_month` | `ozon_realization` |
@@ -113,7 +114,7 @@ flowchart TD
 
     subgraph CS["cloudsix (БД)"]
         CS0["project_cabinets · brands · brand_cabinets<br/><small>разрез внутри проекта</small>"]
-        CS1["wb_reports · wb_report_summary<br/>wb_reconciliation_results · wb_check_results<br/>wb_api_realization (0 строк) · wb_unmapped_columns_log"]
+        CS1["wb_reports · wb_report_summary<br/>wb_reconciliation_results · wb_check_results<br/>wb_api_realization (0 строк) · wb_api_report_summary (0 строк)<br/>wb_api_summary_reconciliation · wb_api_unmapped_fields_log<br/>wb_unmapped_columns_log"]
         CS2a["ozon_reports · ozon_api_transactions (архив)<br/>ozon_check_results · ozon_unmapped_columns_log"]
         CS2b["ozon_realization · ozon_postings · ozon_accruals<br/>ozon_accrual_types · ozon_cashflow_periods<br/>ozon_cashflow_items <small>(новые Ozon-методы, 2026-09)</small>"]
         CS3["api_reconciliation_results<br/><small>сверка API vs .xlsx — WB и Ozon, все методы вместе</small>"]
@@ -154,7 +155,10 @@ flowchart TD
 | `wb_report_summary` | WB | 506 | Итоговые цифры сводного отчёта — для сверки |
 | `wb_reconciliation_results` | WB | 6 072 | Результат сверки детального и сводного отчётов (ReplacingMergeTree — без FINAL считает версии, не уникальные проверки) |
 | `wb_check_results` | WB | 54 | Технические проверки качества загрузки |
-| `wb_api_realization` | WB | **0** | Реализации WB по API — **загрузка не запускалась**, см. `docs/vision.md` → бэклог |
+| `wb_api_realization` | WB | **0** | Реализации WB по API (детализация) — **загрузка не прогонялась**. Пересоздана 2026-09-27 под новое финансовое API: 91 поле, имена camelCase→snake_case, деньги приходят строками и парсятся в Float64. См. шапку `src/schema_wb_api.sql` |
+| `wb_api_report_summary` | WB | **0** | Сводки отчётов WB по API (метод `list`) — одна строка = один отчёт. Сверяется с ручным `wb_report_summary` отчёт-к-отчёту по общему ключу `report_id`=`report_number` (`compare_wb_summaries.py`) |
+| `wb_api_summary_reconciliation` | WB | **0** | Результат этой сверки. Отдельно от `api_reconciliation_results`, потому что там гранулярность месяц, а здесь отчёт |
+| `wb_api_unmapped_fields_log` | WB | **0** | Поля ответа API, которых нет в схеме — непустой лог значит, что WB что-то добавил, и это лежит в `extra_fields`, а не потеряно |
 | `wb_unmapped_columns_log` | WB | 34 | Колонки отчёта, не найденные в справочнике маппинга |
 | `wb_cogs_weekly` | WB | 20 920 | Себестоимость единицы товара по артикулу × неделе (ручная выгрузка .xlsx «СС …»). Справочник ПРОЕКТНЫЙ, без разреза по кабинетам — в файле его нет. Покрывает 85% проданных единиц, непокрытые считаются по нулю |
 | `ozon_reports` | Ozon | 888 101 | Сырые строки отчёта Ozon «Начисления» (ручная .xlsx-выгрузка). **Ручные выгрузки не обновлялись с середины июня 2026** ни по одному кабинету — самый свежий месяц с данными сильно расходится между кабинетами |

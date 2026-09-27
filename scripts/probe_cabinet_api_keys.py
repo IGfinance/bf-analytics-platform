@@ -31,16 +31,25 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from cabinet_credentials import _keys_path  # noqa: E402
 
-WB_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
+# ПРАВКА 2026-09-27: WB отключил Statistics API
+# v5/supplier/reportDetailByPeriod (HTTP 404 "This method is deprecated"),
+# на котором стоял этот зонд — поэтому все прогоны после отключения
+# показывали бы поломку независимо от состояния ключа. Теперь зонд стучится
+# в метод `list` нового финансового API: он самый дешёвый (одна строка на
+# отчёт, а не детализация) и сразу показывает, чей это кабинет —
+# sellerFinanceName. Подробности о новом API — в шапке src/schema_wb_api.sql.
+WB_URL = "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/list"
 OZON_URL = "https://api-seller.ozon.ru/v3/finance/transaction/list"
 
 
 def probe_wb(cabinet: str, token: str, day: date, limit: int, log=print) -> None:
-    params = {"dateFrom": day.isoformat(), "dateTo": day.isoformat(), "limit": limit, "rrdid": 0}
-    headers = {"Authorization": token}
-    log(f"  GET {WB_URL} dateFrom=dateTo={day} limit={limit}")
+    # limit у метода list не применяется (он возвращает отчёты за период
+    # целиком), параметр оставлен в сигнатуре для совместимости с probe_ozon.
+    body = {"dateFrom": day.isoformat(), "dateTo": day.isoformat()}
+    headers = {"Authorization": token, "Content-Type": "application/json"}
+    log(f"  POST {WB_URL} dateFrom=dateTo={day}")
     try:
-        resp = requests.get(WB_URL, params=params, headers=headers, timeout=60)
+        resp = requests.post(WB_URL, json=body, headers=headers, timeout=60)
     except requests.RequestException as e:
         log(f"  ОШИБКА запроса: {e}")
         return
@@ -53,11 +62,14 @@ def probe_wb(cabinet: str, token: str, day: date, limit: int, log=print) -> None
     if resp.status_code >= 400:
         log(f"  Тело ответа: {resp.text[:500]}")
         return
-    rows = resp.json() or []
-    log(f"  Строк: {len(rows)}")
-    if rows:
-        r = rows[0]
-        log(f"  supplier: {r.get('ppvz_supplier_name')!r}  inn: {r.get('ppvz_inn')!r}")
+    reports = resp.json() or []
+    log(f"  Отчётов за день: {len(reports)}")
+    for r in reports:
+        log(f"    reportId={r.get('reportId')} type={r.get('reportType')} "
+            f"кабинет по версии WB: {r.get('sellerFinanceName')!r} "
+            f"к перечислению={r.get('forPaySum')}")
+    if not reports:
+        log("    (пусто — за один день отчёта может не быть, это не признак поломки ключа)")
 
 
 def probe_ozon(cabinet: str, client_id: str, api_key: str, day: date, page_size: int, log=print) -> None:
@@ -93,8 +105,10 @@ def probe_ozon(cabinet: str, client_id: str, api_key: str, day: date, page_size:
 def main():
     parser = argparse.ArgumentParser(description="Разовая проверка API-ключей по кабинетам (1 день, без ретраев)")
     parser.add_argument("--date", help="День для проверки, YYYY-MM-DD (по умолчанию: вчера)")
-    parser.add_argument("--delay", type=float, default=60.0, help="Пауза между запросами, сек (по умолчанию 60)")
-    parser.add_argument("--limit", type=int, default=50, help="WB: limit в запросе (по умолчанию 50)")
+    parser.add_argument("--delay", type=float, default=65.0,
+                        help="Пауза между запросами, сек (по умолчанию 65 — у WB лимит 1 запрос/мин, "
+                             "ровно 60 стабильно ловит 429)")
+    parser.add_argument("--limit", type=int, default=50, help="Ozon: не используется; WB: не применяется у метода list")
     parser.add_argument("--page-size", type=int, default=50, help="Ozon: page_size (по умолчанию 50)")
     parser.add_argument("--cabinets", help="Ограничить списком через запятую, напр. CloudSix,Torado")
     parser.add_argument("--dry-run", action="store_true", help="Только показать план запросов, без обращений к API")

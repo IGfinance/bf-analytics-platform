@@ -5,9 +5,14 @@
 суммы, что и отчёты, которые продавец сейчас скачивает вручную.
 
 Группировка — по месяцу: на стороне .xlsx по coalesce(order_date, sale_date)
-(так же, как партиционируется wb_reports), на стороне API — по rr_dt
+(так же, как партиционируется wb_reports), на стороне API — по rr_date
 (дата строки отчёта о реализации). Построчного сопоставления нет — у API
 есть свой rrd_id, но в .xlsx такого столбца нет.
+
+Отдельно от этой сверки есть вторая, по СВОДКАМ: wb_api_report_summary
+(метод list) против wb_report_summary (ручной сводный .xlsx) — там ключ
+общий, report_id = report_number, то есть сверять можно отчёт к отчёту,
+а не только агрегатами по месяцу. См. compare_wb_summaries.py.
 
 Пример:
     python3 compare_wb_sources.py --cabinet CloudSix
@@ -28,19 +33,30 @@ from wb_core import get_client  # noqa: E402
 # раньше были шире (100/100/50/10/10₽) и маскировали реальные расхождения между
 # WB API и .xlsx, которые ещё не разобраны (см. loyalty-баг в reconciliation_rules_wb.yaml
 # как пример того, что скрывает широкий tolerance).
+#
+# ПРАВКА 2026-09-27: имена API-колонок переехали вслед за сменой метода WB
+# (v5/supplier/reportDetailByPeriod отключён, теперь финансовое API —
+# см. шапку schema_wb_api.sql). Соответствие старое → новое:
+#   ppvz_for_pay → for_pay, delivery_rub → delivery_service,
+#   storage_fee → paid_storage, rr_dt → rr_date.
+# retail_amount, quantity и penalty названия не меняли.
 METRICS = [
-    ("payable_to_seller_vs_ppvz_for_pay",
-     "sum(payable_to_seller)", "sum(ppvz_for_pay)", 1.0),
+    ("payable_to_seller_vs_for_pay",
+     "sum(payable_to_seller)", "sum(for_pay)", 1.0),
     ("wb_realized_amount_vs_retail_amount",
      "sum(wb_realized_amount)", "sum(retail_amount)", 1.0),
     ("qty_vs_quantity",
      "sum(qty)", "sum(quantity)", 1.0),
-    ("delivery_service_cost_vs_delivery_rub",
-     "sum(delivery_service_cost)", "sum(delivery_rub)", 1.0),
+    ("delivery_service_cost_vs_delivery_service",
+     "sum(delivery_service_cost)", "sum(delivery_service)", 1.0),
     ("total_fines_vs_penalty",
      "sum(total_fines)", "sum(penalty)", 1.0),
-    ("storage_cost_vs_storage_fee",
-     "sum(storage_cost)", "sum(storage_fee)", 1.0),
+    ("storage_cost_vs_paid_storage",
+     "sum(storage_cost)", "sum(paid_storage)", 1.0),
+    ("acceptance_operations_vs_paid_acceptance",
+     "sum(acceptance_operations)", "sum(paid_acceptance)", 1.0),
+    ("deductions_vs_deduction",
+     "sum(deductions)", "sum(deduction)", 1.0),
 ]
 
 
@@ -60,7 +76,7 @@ def fetch_xlsx_by_month(client, cabinet: str) -> dict:
 def fetch_api_by_month(client, cabinet: str) -> dict:
     exprs = ", ".join(f"{expr} AS m{i}" for i, (_, _, expr, _) in enumerate(METRICS))
     sql = f"""
-        SELECT toStartOfMonth(rr_dt) AS month, {exprs}
+        SELECT toStartOfMonth(rr_date) AS month, {exprs}
         FROM wb_api_realization FINAL
         WHERE cabinet = {{cabinet:String}}
         GROUP BY month
