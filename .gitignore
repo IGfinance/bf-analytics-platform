@@ -6,6 +6,9 @@ venv/
 
 # Secrets
 .env
+.env.bak*
+# ^ .env матчит ТОЛЬКО точное имя: бэкапы вида .env.bak-20260927 под него не
+#   попадали, и `git add -A` в корне утащил бы файл с токенами в историю
 !.env.example
 .env-setup
 secrets/
