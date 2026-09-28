@@ -41,6 +41,17 @@
 -- qty не заполнен. Они не несут информации о продажах и только раздували бы
 -- таблицу. Строка с 0 продаж и 3 возвратами (итог -3) ОСТАЁТСЯ — это факт.
 
+-- ПЕРЕКЛЮЧЕНО НА API 2026-09-28. WB-вьюха читает wb_api_realization_as_reports
+-- (данные финансового API) вместо wb_reports (ручная выгрузка .xlsx) — вслед
+-- за Моделью 49 и отчётом для адаптера. Причина та же: .xlsx отставал на
+-- 6 недель по CloudSix и на 2.5 месяца по остальным, а API отдаёт данные до
+-- текущей даты. Ozon-вьюха ниже осталась на .xlsx осознанно (решение
+-- владельца 2026-09-28: Ozon пока не переводим).
+--
+-- ГРАНИЦА 2026: загружен только 2026 год. Внутри отчётов 2026 попадаются
+-- строки, датированные концом 2025 — это огрызок периода, а не данные, и
+-- неделя конца декабря показала бы заниженные продажи как настоящие.
+-- Убрать условие, когда догрузят более ранние годы.
 CREATE VIEW IF NOT EXISTS wb_sales_qty_by_sku_week AS
 SELECT
     cabinet                                                        AS cabinet,
@@ -51,8 +62,8 @@ SELECT
     toInt64(coalesce(sumIf(qty, lowerUTF8(trim(payment_reason)) = 'возврат'), 0)) AS qty_returned,
     toInt64(coalesce(sumIf(qty, lowerUTF8(trim(payment_reason)) = 'продажа'), 0)
           - coalesce(sumIf(qty, lowerUTF8(trim(payment_reason)) = 'возврат'), 0)) AS sales_qty
-FROM wb_reports
-WHERE sale_date IS NOT NULL
+FROM wb_api_realization_as_reports
+WHERE sale_date IS NOT NULL AND sale_date >= '2026-01-01'
 GROUP BY cabinet, week, sku
 HAVING qty_sold != 0 OR qty_returned != 0
 ORDER BY cabinet, sku, week;
