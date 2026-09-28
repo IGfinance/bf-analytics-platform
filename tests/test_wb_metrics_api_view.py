@@ -130,3 +130,12 @@ def test_conversion_keyed_on_currency_not_cabinet():
     sql = RENAMER.read_text(encoding="utf-8")
     assert "d.currency = c.currency" in sql
     assert "'NoxLab'" not in sql, "имя кабинета не должно быть зашито в конверсию"
+
+
+def test_storage_rows_dated_by_rr_date():
+    """Правило датировки зависит от типа операции — так датирует сам .xlsx.
+    Хранение проводится следующим днём после начисления (18:00 UTC), и по
+    московской дате sale_dt январь NoxLab дал бы 1350.33 вместо 923.70."""
+    sql = RENAMER.read_text(encoding="utf-8")
+    assert "d.seller_oper_name IN ('Хранение', 'Коррекция хранения'), d.rr_date" in sql
+    assert "coalesce(toDate(d.sale_dt + INTERVAL 3 HOUR), d.rr_date)" in sql
