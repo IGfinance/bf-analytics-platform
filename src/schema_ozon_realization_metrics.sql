@@ -34,10 +34,52 @@
 -- кабинетов 8 — поэтому отчёт для адаптера джойнит эту вьюху ВЛЕВО: строки
 -- 08-15 есть у всех восьми, а 01-07 только там, где есть реализация.
 
+-- СЕБЕСТОИМОСТЬ (добавлена 2026-09-28). Считается тем же способом, что в
+-- ozon_metrics_by_sku_month: (поставки минус возвраты) в штуках по артикулу
+-- x себестоимость единицы за НЕДЕЛЮ операции из wb_cogs_weekly. Справочник
+-- общий для WB и Ozon — один товар продаётся на обеих площадках по одной
+-- закупочной цене (см. schema_wb_cogs.sql).
+--
+-- Ключ сопоставления — offer_id (артикул продавца), приведённый к нижнему
+-- регистру, и понедельник недели stop_date. В .xlsx-версии роль offer_id
+-- играет article; это одно и то же поле, названное по-разному.
+--
+-- has_cost, а не проверка unit_cost на NULL: ClickHouse в LEFT JOIN
+-- подставляет 0, и настоящая нулевая цена была бы неотличима от отсутствия
+-- строки в справочнике.
+--
+-- Артикулы, которых нет в справочнике, дают cogs = 0 — занижаем, но не
+-- выдумываем цену. Насколько занижено, видно по счётным колонкам
+-- cogs_qty_covered/cogs_qty_uncovered рядом: долю покрытия считайте в
+-- карточке как covered/(covered+uncovered), готовой колонки-процента нет
+-- намеренно — такую долю нельзя суммировать по месяцам.
 CREATE VIEW IF NOT EXISTS ozon_realization_by_cabinet_month AS
+WITH cogs_agg AS (
+    SELECT
+        cabinet                                  AS cabinet,
+        toStartOfMonth(stop_date)                AS month,
+        sum(net_qty * unit_cost)                 AS cogs_amount,
+        sum(if(has_cost = 1, net_qty, 0))        AS qty_covered,
+        sum(if(has_cost = 1, 0, net_qty))        AS qty_uncovered
+    FROM (
+        SELECT
+            r.cabinet AS cabinet,
+            r.stop_date AS stop_date,
+            multiIf(r.kind = 'delivery', r.quantity, r.kind = 'return', -r.quantity, 0) AS net_qty,
+            coalesce(w.unit_cost, 0) AS unit_cost,
+            coalesce(w.has_cost, toUInt8(0)) AS has_cost
+        FROM ozon_realization AS r
+        LEFT JOIN (
+            SELECT sku, week_start, unit_cost, toUInt8(1) AS has_cost
+            FROM wb_cogs_weekly FINAL
+        ) AS w
+          ON lowerUTF8(trim(r.offer_id)) = w.sku AND toMonday(r.stop_date) = w.week_start
+    )
+    GROUP BY cabinet, month
+)
 SELECT
-    cabinet                                                      AS cabinet,
-    toStartOfMonth(stop_date)                                    AS month,
+    o.cabinet                                                    AS cabinet,
+    toStartOfMonth(o.stop_date)                                  AS month,
 
     toInt64(sumIf(quantity, kind = 'delivery')
           - sumIf(quantity, kind = 'return'))                    AS sales_qty,
@@ -57,9 +99,15 @@ SELECT
            + bonus, kind = 'return')                             AS returns_corrections,
 
     sumIf(total, kind = 'delivery')
-      - sumIf(total, kind = 'return')                            AS payable_for_goods
-FROM ozon_realization
-GROUP BY cabinet, month
+      - sumIf(total, kind = 'return')                            AS payable_for_goods,
+
+    -coalesce(any(c.cogs_amount), 0)                             AS cogs,
+    toInt64(coalesce(any(c.qty_covered), 0))                     AS cogs_qty_covered,
+    toInt64(coalesce(any(c.qty_uncovered), 0))                   AS cogs_qty_uncovered
+FROM ozon_realization AS o
+LEFT JOIN cogs_agg AS c
+       ON c.cabinet = o.cabinet AND c.month = toStartOfMonth(o.stop_date)
+GROUP BY o.cabinet, toStartOfMonth(o.stop_date)
 ORDER BY cabinet, month;
 
 ALTER TABLE ozon_realization_by_cabinet_month COMMENT COLUMN sales_qty 'Кол-во продаж = поставки минус возвраты (kind delivery/return). На CloudSix расходится с .xlsx на 2-4 шт в месяц.';
@@ -68,3 +116,7 @@ ALTER TABLE ozon_realization_by_cabinet_month COMMENT COLUMN spp_amount 'СПП 
 ALTER TABLE ozon_realization_by_cabinet_month COMMENT COLUMN commission 'Комиссия = -standard_fee (поставки минус возвраты). Совпадает с .xlsx ТОЧНО.';
 ALTER TABLE ozon_realization_by_cabinet_month COMMENT COLUMN returns_corrections 'Корректировки = возвраты целиком, расходом. Разбивка у Ozon своя, поэтому с .xlsx расходится на 2 025 ₽ из 1.35 млн.';
 ALTER TABLE ozon_realization_by_cabinet_month COMMENT COLUMN payable_for_goods 'К перечислению за товар = total (поставки минус возвраты). Совпадает с .xlsx ТОЧНО и с payable_for_goods из cash-flow тоже.';
+
+ALTER TABLE ozon_realization_by_cabinet_month COMMENT COLUMN cogs 'Себестоимость проданного товара, ₽, знак минус (расход). (Поставки минус возвраты) в штуках по артикулу x цена единицы за неделю операции из wb_cogs_weekly. Артикулы вне справочника дают 0 — насколько занижено, видно по cogs_qty_uncovered.';
+ALTER TABLE ozon_realization_by_cabinet_month COMMENT COLUMN cogs_qty_covered 'Сколько единиц (поставки минус возвраты) нашли себестоимость на свою неделю. Колонка счётная, суммируется свободно.';
+ALTER TABLE ozon_realization_by_cabinet_month COMMENT COLUMN cogs_qty_uncovered 'Сколько единиц остались БЕЗ себестоимости и посчитаны по нулю. Ненулевое значение = себестоимость и валовая прибыль занижены, лечится дозаливкой файла СС (ingest_wb_cogs.py), а не правкой формул.';

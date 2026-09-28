@@ -30,8 +30,13 @@
 -- саму вьюху cash-flow («returned Nullable column having not Nullable type»),
 -- поэтому флаг.
 --
--- Строк 16-17 (себестоимость, валовая прибыль) нет: себестоимость требует
--- количества по артикулу в привязке к справочнику, это отдельная задача.
+-- СТРОКИ 16-17 добавлены 2026-09-28. Себестоимость считается из того же
+-- «Отчёта о реализации» — там есть количество по артикулу (offer_id), а
+-- справочник цен wb_cogs_weekly общий для WB и Ozon. Валовая прибыль =
+-- «15 Выручка к перечислению» + себестоимость (она отрицательная).
+-- Рядом две СЧЁТНЫЕ колонки покрытия: артикулы вне справочника дают ноль, и
+-- насколько цифра занижена, видно по «Ед. без себестоимости», а не прячется.
+-- Покрытие на 2026-09-28: 98.7-100% единиц по всем шести кабинетам.
 --
 -- СТРОКА «Не разнесено по статьям» — это колонка unmapped самой вьюхи:
 -- деньги, которые пришли, но не легли ни в одну статью каталога услуг Ozon.
@@ -67,10 +72,15 @@ SELECT
     toFloat64(c.promotion_cost)                 AS "13 Продвижение",
     toFloat64(c.other_accruals)                 AS "14 Прочие начисления",
     toFloat64(c.payable_total)                  AS "15 Выручка к перечислению",
-    toFloat64(c.unmapped)                       AS "Не разнесено по статьям"
+    if(r.has_real = 1, toNullable(r.cogs), NULL)                   AS "16 Себестоимость",
+    if(r.has_real = 1, toNullable(c.payable_total + r.cogs), NULL) AS "17 Валовая прибыль",
+    toFloat64(c.unmapped)                       AS "Не разнесено по статьям",
+    if(r.has_real = 1, toNullable(r.cogs_qty_covered), NULL)       AS "Ед. с себестоимостью",
+    if(r.has_real = 1, toNullable(r.cogs_qty_uncovered), NULL)     AS "Ед. без себестоимости"
 FROM ozon_metrics_by_cabinet_month_cashflow_api AS c
 LEFT JOIN (SELECT cabinet, month, 1 AS has_real, sales_qty, sales_with_spp,
-                  sales_amount, spp_amount, commission, returns_corrections
+                  sales_amount, spp_amount, commission, returns_corrections,
+                  cogs, cogs_qty_covered, cogs_qty_uncovered
            FROM ozon_realization_by_cabinet_month) AS r
        ON r.cabinet = c.cabinet AND r.month = c.month
 WHERE 1 = 1
