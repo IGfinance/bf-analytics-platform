@@ -67,7 +67,66 @@ def test_renamer_covers_every_field_the_formula_reads():
         )
 
 
-def test_renamer_uses_final():
-    """wb_api_realization — ReplacingMergeTree: без FINAL повторная загрузка
-    того же отчёта посчиталась бы дважды."""
-    assert "FROM wb_api_realization FINAL" in RENAMER.read_text(encoding="utf-8")
+def test_renamer_uses_final_on_both_tables():
+    """wb_api_realization и cbr_rates — обе ReplacingMergeTree: без FINAL
+    повторная загрузка отчёта или курса посчиталась бы дважды. У курсов это
+    особенно коварно: задвоенный курс размножил бы строки ASOF-джойном."""
+    sql = RENAMER.read_text(encoding="utf-8")
+    assert "FROM wb_api_realization AS d FINAL" in sql, "нет FINAL у данных"
+    assert "FROM cbr_rates FINAL" in sql, "нет FINAL у курсов"
+
+
+# --- валютная конверсия -------------------------------------------------------
+# NoxLab — киргизский кабинет, WB отдаёт его отчёты в сомах. Без конверсии мы
+# складывали сомы с рублями: именно отсюда бралось «необъяснимое» расхождение
+# NoxLab во внешней сверке на 12-16%.
+
+RATES = ROOT / "src" / "schema_cbr_rates.sql"
+
+
+def test_money_columns_are_converted():
+    """Каждая денежная колонка обязана быть умножена на курс. Пропущенная
+    колонка — это сомы, выданные за рубли, и заметить это в отчёте нельзя."""
+    sql = RENAMER.read_text(encoding="utf-8")
+    money = [
+        "wb_realized_amount", "retail_price_with_discount", "payable_to_seller",
+        "delivery_service_cost", "total_fines", "storage_cost",
+        "acceptance_operations", "deductions", "loyalty_discount_compensation",
+        "loyalty_program_cost", "loyalty_points_deducted", "retail_price",
+    ]
+    for col in money:
+        line = next((l for l in sql.splitlines() if f"AS {col}" in l), None)
+        assert line is not None, f"колонка {col} пропала из вьюхи-переименователя"
+        assert "* r.fx" in line, f"денежная колонка {col} не умножена на курс: {line.strip()}"
+
+
+def test_percent_and_qty_columns_are_not_converted():
+    """Проценты и количества умножать на курс нельзя — это не деньги."""
+    sql = RENAMER.read_text(encoding="utf-8")
+    for col in ("qty", "delivery_qty", "return_qty", "platform_discount_pct", "kvv_pct"):
+        line = next((l for l in sql.splitlines() if f"AS {col}" in l), None)
+        assert line is not None, f"колонка {col} пропала"
+        assert "fx" not in line, f"{col} не деньги, курс к ней не применяется: {line.strip()}"
+
+
+def test_missing_rate_yields_null_not_one():
+    """Если курса на дату нет, деньги должны стать NULL, а НЕ пройти по курсу 1:
+    неконвертированные сомы, выданные за рубли, хуже пропуска."""
+    sql = RENAMER.read_text(encoding="utf-8")
+    assert "CAST(NULL AS Nullable(Float64)))" in sql
+    assert "multiIf(d.currency = 'RUB', toFloat64(1)" in sql
+
+
+def test_rate_is_per_single_unit():
+    """ЦБ котирует сом за 100 единиц. Использование value вместо rate даёт
+    ошибку ровно в 100 раз, поэтому конверсия обязана брать rate."""
+    assert "value / nominal" in (ROOT / "src" / "ingest_cbr_rates.py").read_text(encoding="utf-8")
+    assert "c.rate" in RENAMER.read_text(encoding="utf-8")
+
+
+def test_conversion_keyed_on_currency_not_cabinet():
+    """Привязка к валюте из данных, а не к имени кабинета: появится второй
+    зарубежный кабинет — заработает само."""
+    sql = RENAMER.read_text(encoding="utf-8")
+    assert "d.currency = c.currency" in sql
+    assert "'NoxLab'" not in sql, "имя кабинета не должно быть зашито в конверсию"
