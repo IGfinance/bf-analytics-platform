@@ -1,5 +1,5 @@
 -- Вьюха-переименователь: данные финансового API (wb_api_realization) под
--- ИМЕНАМИ КОЛОНОК ручной выгрузки (wb_reports).
+-- ИМЕНАМИ КОЛОНОК ручной выгрузки (wb_reports), с приведением денег к рублям.
 --
 -- Зачем. Формула метрик WB живёт в ОДНОМ месте — wb_metrics_by_sku_month
 -- (schema_wb_metrics_views_sku.sql). Чтобы посчитать те же метрики на данных
@@ -12,6 +12,28 @@
 -- строке — имени таблицы в FROM. Всё остальное делает эта вьюха, а сам
 -- API-вариант метрик генерируется из канонического файла механически
 -- (scripts/gen_wb_metrics_api_view.py), и тест не даёт им разойтись.
+--
+-- ВАЛЮТА. Не все кабинеты рублёвые: NoxLab киргизский, WB отдаёт его отчёты
+-- в СОМАХ. Видно по полю currency самого API — 'KGS' у NoxLab, 'RUB' у
+-- остальных семи. Здесь каждая денежная колонка умножается на курс ЦБ РФ
+-- на дату операции, поэтому вниз по цепочке всё уже в рублях и складывается
+-- с остальными кабинетами. Привязка к currency, а НЕ к имени кабинета:
+-- появится второй зарубежный кабинет — заработает само.
+--
+-- Именно это расхождение не удавалось объяснить во внешней сверке
+-- (Сверка_WB_дашборд_vs_адаптеры_25_09_26.xlsx): у NoxLab все денежные
+-- показатели отличались на 12-16%, коэффициент плавал по месяцам
+-- 0.834-0.919. Это был курс сома (за 2026 он ходил 0.8095..0.9948 ₽),
+-- а не ошибка данных.
+--
+-- Курс берётся ASOF-джойном («последний известный на дату»), а не точным
+-- совпадением: ЦБ не публикует курс в выходные и праздники (202 значения на
+-- 299 дней), и точное совпадение молча обнулило бы операции выходного дня.
+-- Если курса нет вовсе (дата раньше первого известного) — деньги станут
+-- NULL, а не пройдут неконвертированными: сумма занизится, но сомы не
+-- притворятся рублями. Проверять покрытие:
+--   SELECT currency, countIf(fx IS NULL), count()
+--   FROM wb_api_realization_as_reports GROUP BY currency;
 --
 -- СООТВЕТСТВИЕ ПОЛЕЙ проверено на данных 2026-09-28, на отчёте 813819623
 -- (CloudSix, есть и в API, и в xlsx) — совпали и разбивки, и суммы:
@@ -30,19 +52,19 @@
 --     ноль. Это не потеря: в wb_reports колонка нулевая во ВСЕХ строках за всю
 --     историю (0 ненулевых значений), то есть метрика «Доплаты» и сейчас
 --     всегда ноль.
---   transport_warehouse_compensation ↔ rebill_logistic_cost — в API есть
---     (904 470 ₽ за 2026), но формула исключает его осознанно с 2026-09-14:
---     это компенсация, которую WB платит своим перевозчикам за свой счёт,
---     она уже сидит внутри комиссии. Отдаём как есть, формула его не читает.
+--   transport_warehouse_compensation ↔ rebill_logistic_cost — в API есть,
+--     но формула исключает его осознанно с 2026-09-14: это компенсация,
+--     которую WB платит своим перевозчикам за свой счёт, она уже сидит
+--     внутри комиссии. Отдаём как есть, формула его не читает.
 --
--- FINAL обязателен: wb_api_realization — ReplacingMergeTree, и без FINAL
--- повторная загрузка того же отчёта считалась бы дважды.
+-- FINAL обязателен и у данных, и у курсов: обе таблицы ReplacingMergeTree,
+-- без FINAL повторная загрузка считалась бы дважды.
 
 CREATE VIEW IF NOT EXISTS wb_api_realization_as_reports AS
 SELECT
-    cabinet                                  AS cabinet,
-    report_id                                AS report_number,
-    rrd_id                                   AS row_num,
+    r.cabinet                                AS cabinet,
+    r.report_id                              AS report_number,
+    r.rrd_id                                 AS row_num,
 
     -- ДАТА ПРОДАЖИ = sale_dt, переведённый в МОСКОВСКОЕ время.
     -- API отдаёт sale_dt в UTC, а .xlsx датирует строки по Москве (UTC+3).
@@ -57,57 +79,73 @@ SELECT
     -- последним днём месяца, а проводятся первым днём следующего — и вся
     -- сумма переезжала в соседний месяц (у INOVO 377 435 ₽ с февраля на март).
     -- coalesce на rr_date — страховка для строк без sale_dt.
-    coalesce(toDate(sale_dt + INTERVAL 3 HOUR), rr_date) AS sale_date,
-    toDate(order_dt + INTERVAL 3 HOUR)       AS order_date,
-    rr_date                                  AS rr_date,
-    sale_dt                                  AS sale_dt,
-    vendor_code                              AS supplier_article,
-    title                                    AS product_name,
-    subject_name                             AS subject_category,
-    brand_name                               AS brand,
-    tech_size                                AS size,
-    sku                                      AS barcode,
-    nm_id                                    AS nomenclature_code,
+    r.sale_date_msk                          AS sale_date,
+    r.order_date_msk                         AS order_date,
+    r.rr_date                                AS rr_date,
+    r.sale_dt                                AS sale_dt,
+    r.currency                               AS currency,
+    r.fx                                     AS fx,
 
-    doc_type_name                            AS document_type,
-    seller_oper_name                         AS payment_reason,
-    bonus_type_name                          AS logistics_fines_corrections_type,
-    quantity                                 AS qty,
+    r.vendor_code                            AS supplier_article,
+    r.title                                  AS product_name,
+    r.subject_name                           AS subject_category,
+    r.brand_name                             AS brand,
+    r.tech_size                              AS size,
+    r.sku                                    AS barcode,
+    r.nm_id                                  AS nomenclature_code,
 
-    retail_price                             AS retail_price,
-    retail_amount                            AS wb_realized_amount,
-    retail_price_with_disc                   AS retail_price_with_discount,
-    for_pay                                  AS payable_to_seller,
+    r.doc_type_name                          AS document_type,
+    r.seller_oper_name                       AS payment_reason,
+    r.bonus_type_name                        AS logistics_fines_corrections_type,
+    r.quantity                               AS qty,
 
-    delivery_service                         AS delivery_service_cost,
-    penalty                                  AS total_fines,
-    paid_storage                             AS storage_cost,
-    paid_acceptance                          AS acceptance_operations,
-    deduction                                AS deductions,
-
-    cashback_discount                        AS loyalty_discount_compensation,
-    cashback_commission_change               AS loyalty_program_cost,
-    cashback_amount                          AS loyalty_points_deducted,
+    -- ДЕНЬГИ умножены на курс (см. шапку). Проценты и количества НЕ трогаем.
+    r.retail_price               * r.fx      AS retail_price,
+    r.retail_amount              * r.fx      AS wb_realized_amount,
+    r.retail_price_with_disc     * r.fx      AS retail_price_with_discount,
+    r.for_pay                    * r.fx      AS payable_to_seller,
+    r.delivery_service           * r.fx      AS delivery_service_cost,
+    r.penalty                    * r.fx      AS total_fines,
+    r.paid_storage               * r.fx      AS storage_cost,
+    r.paid_acceptance            * r.fx      AS acceptance_operations,
+    r.deduction                  * r.fx      AS deductions,
+    r.cashback_discount          * r.fx      AS loyalty_discount_compensation,
+    r.cashback_commission_change * r.fx      AS loyalty_program_cost,
+    r.cashback_amount            * r.fx      AS loyalty_points_deducted,
+    r.rebill_logistic_cost       * r.fx      AS transport_warehouse_compensation,
 
     -- нет пары в API; в xlsx колонка нулевая во всех строках за всю историю
     CAST(0 AS Nullable(Float64))             AS wb_commission_correction,
-    -- формула его не использует (исключён 2026-09-14), отдаём для полноты
-    rebill_logistic_cost                     AS transport_warehouse_compensation,
 
-    delivery_amount                          AS delivery_qty,
-    return_amount                            AS return_qty,
-    office_name                              AS warehouse,
-    ppvz_office_name                         AS delivery_office_name,
-    country                                  AS country,
-    srid                                     AS srid,
-    sticker_id                               AS marketplace_sticker,
-    acquiring_bank                           AS acquiring_bank_name,
-    spp                                      AS platform_discount_pct,
-    commission_percent                       AS kvv_pct,
-    sale_percent                             AS total_agreed_discount_pct
-FROM wb_api_realization FINAL;
+    r.delivery_amount                        AS delivery_qty,
+    r.return_amount                          AS return_qty,
+    r.office_name                            AS warehouse,
+    r.ppvz_office_name                       AS delivery_office_name,
+    r.country                                AS country,
+    r.srid                                   AS srid,
+    r.sticker_id                             AS marketplace_sticker,
+    r.acquiring_bank                         AS acquiring_bank_name,
+    r.spp                                    AS platform_discount_pct,
+    r.commission_percent                     AS kvv_pct,
+    r.sale_percent                           AS total_agreed_discount_pct
+FROM (
+    SELECT
+        d.*,
+        coalesce(toDate(d.sale_dt + INTERVAL 3 HOUR), d.rr_date) AS sale_date_msk,
+        toDate(d.order_dt + INTERVAL 3 HOUR)                     AS order_date_msk,
+        -- RUB — курс 1. Иначе курс ЦБ, а если его нет — NULL, а не 1:
+        -- неконвертированные сомы, выданные за рубли, хуже пропуска.
+        multiIf(d.currency = 'RUB', toFloat64(1),
+                c.rate > 0,         c.rate,
+                CAST(NULL AS Nullable(Float64)))                 AS fx
+    FROM wb_api_realization AS d FINAL
+    ASOF LEFT JOIN (SELECT currency, rate_date, rate FROM cbr_rates FINAL) AS c
+      ON d.currency = c.currency AND d.rr_date >= c.rate_date
+) AS r;
 
 ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN payment_reason 'seller_oper_name из API. Совпадает с payment_reason в wb_reports посимвольно — проверено на 14 типах операций отчёта 813819623.';
-ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN logistics_fines_corrections_type 'bonus_type_name из API — то же, что "Виды логистики, штрафов и доплат" в .xlsx. На нём стоит разбивка логистики на прямую/обратную и удержаний на продвижение/прочее, поэтому соответствие проверялось отдельно.';
-ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN loyalty_program_cost 'cashback_commission_change из API. Поля программы лояльности WB переименовал в cashback_*, по названию связать нельзя — соответствие установлено по данным.';
-ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN wb_commission_correction 'Константный 0: в API аналога нет, а в wb_reports эта колонка нулевая во всех строках за всю историю, так что метрика "Доплаты" и без того всегда ноль.';
+ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN logistics_fines_corrections_type 'bonus_type_name из API — то же, что "Виды логистики, штрафов и доплат" в .xlsx. На нём стоит разбивка логистики на прямую/обратную и удержаний на продвижение/прочее.';
+ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN loyalty_program_cost 'cashback_commission_change из API, умноженный на курс. Поля лояльности WB переименовал в cashback_*, по названию связать нельзя — соответствие установлено по данным.';
+ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN wb_commission_correction 'Константный 0: в API аналога нет, а в wb_reports колонка нулевая во всех строках за всю историю.';
+ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN fx 'Курс валюты кабинета к рублю на дату операции (ЦБ РФ, последний известный). 1 для рублёвых кабинетов. NULL = курса на эту дату нет и деньги в строке тоже NULL — признак дыры в cbr_rates, а не нуля.';
+ALTER TABLE wb_api_realization_as_reports COMMENT COLUMN currency 'Валюта отчёта как её отдаёт WB. KGS у NoxLab (киргизский кабинет), RUB у остальных семи.';
