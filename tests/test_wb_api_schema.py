@@ -168,3 +168,93 @@ def test_no_stale_v5_field_names_left():
     for name in dead:
         assert name not in SCHEMA, f"в schema_wb_api.sql осталось v5-имя {name}"
         assert name not in core, f"в wb_api_core.py осталось v5-имя {name}"
+
+
+# --- поведение _post на нестандартных ответах -------------------------------
+# Регресс на находку 2026-09-27: период без отчётов WB отдаёт 200 с ПУСТЫМ
+# телом, а не с "[]". resp.json() на таком падает ValueError, и при дозагрузке
+# истории это выглядело как сбой куска (ARB/Feel/NoxLab — до 2025-03 отчётов
+# нет вовсе). Пустой ответ обязан читаться как «отчётов нет».
+
+class _FakeResp:
+    def __init__(self, text, status=200):
+        self.text = text
+        self.status_code = status
+        self.headers = {}
+
+    def json(self):
+        import json as _json
+        return _json.loads(self.text)
+
+
+def _post_with(monkeypatch, resp):
+    import wb_api_core as core
+    monkeypatch.setattr(core.requests, "post", lambda *a, **k: resp)
+    pacer = core._Pacer(interval=0, log=lambda *_: None)
+    return core._post("tok", "/p", {}, pacer, log=lambda *_: None)
+
+
+def test_empty_body_means_no_reports(monkeypatch):
+    assert _post_with(monkeypatch, _FakeResp("")) == []
+    assert _post_with(monkeypatch, _FakeResp("   \n")) == []
+
+
+def test_json_null_means_no_reports(monkeypatch):
+    assert _post_with(monkeypatch, _FakeResp("null")) == []
+
+
+def test_valid_body_is_returned(monkeypatch):
+    assert _post_with(monkeypatch, _FakeResp('[{"reportId": 1}]')) == [{"reportId": 1}]
+
+
+def test_garbage_body_raises_with_context(monkeypatch):
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="не разбирается как JSON"):
+        _post_with(monkeypatch, _FakeResp("<html>502 Bad Gateway</html>"))
+
+
+# --- пагинация detailed ------------------------------------------------------
+# Регресс на находку 2026-09-28: строки в ответе НЕ отсортированы по rrdId.
+# Курсор должен браться от ПОСЛЕДНЕЙ строки страницы; курсор от max(rrdId)
+# перепрыгивает через строки и теряет данные молча.
+
+def _pages_via(monkeypatch, pages):
+    """Гоняет fetch_detailed_pages по подготовленным ответам, возвращает
+    список курсоров, с которыми ушли запросы."""
+    import wb_api_core as core
+    sent = []
+
+    def fake_post(token, path, body, pacer, log=print):
+        sent.append(body["rrdId"])
+        return pages[len(sent) - 1]
+
+    monkeypatch.setattr(core, "_post", fake_post)
+    pacer = core._Pacer(interval=0, log=lambda *_: None)
+    got = list(core.fetch_detailed_pages("tok", 1, pacer, log=lambda *_: None))
+    return sent, got
+
+
+def test_cursor_takes_last_row_not_max(monkeypatch):
+    import wb_api_core as core
+    # страница длиной PAGE_LIMIT, неотсортированная: max НЕ равен последнему
+    big = [{"rrdId": 500}] + [{"rrdId": i} for i in range(100, 100 + core.PAGE_LIMIT - 2)] + [{"rrdId": 200}]
+    assert len(big) == core.PAGE_LIMIT
+    assert max(r["rrdId"] for r in big) != big[-1]["rrdId"]
+    sent, got = _pages_via(monkeypatch, [big, [{"rrdId": 201}]])
+    # второй запрос обязан уйти с rrdId ПОСЛЕДНЕЙ строки (200), а не с max (10097)
+    assert sent == [0, 200], f"курсор взят неверно: {sent}"
+    assert len(got) == 2
+
+
+def test_short_page_ends_pagination(monkeypatch):
+    import wb_api_core as core
+    sent, got = _pages_via(monkeypatch, [[{"rrdId": 7}]])
+    assert sent == [0] and len(got) == 1
+
+
+def test_repeating_cursor_raises(monkeypatch):
+    import pytest as _pytest
+    import wb_api_core as core
+    page = [{"rrdId": 42}] * core.PAGE_LIMIT
+    with _pytest.raises(RuntimeError, match="курсор повторяется"):
+        _pages_via(monkeypatch, [page, page])

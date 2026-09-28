@@ -243,8 +243,56 @@ def _post(token: str, path: str, body: dict, pacer: _Pacer, log=print) -> list |
             )
         if resp.status_code >= 400:
             raise RuntimeError(f"WB API {resp.status_code} на {path}: {resp.text[:500]}")
-        return resp.json() or []
+        # Период без отчётов: WB отдаёт 200 с ПУСТЫМ телом, а не с "[]".
+        # resp.json() на таком падает ValueError, и раньше это выглядело как
+        # сбой куска при дозагрузке истории (поймано 2026-09-27 на кабинетах
+        # ARB/Feel/NoxLab, у которых до 2025-03 отчётов просто нет).
+        if not resp.text.strip():
+            return []
+        try:
+            return resp.json() or []
+        except ValueError as e:
+            raise RuntimeError(
+                f"WB API {path}: ответ 200, но тело не разбирается как JSON "
+                f"({e}). Первые 300 символов: {resp.text[:300]!r}"
+            ) from e
     raise RuntimeError(f"WB API: {path} не ответил за {MAX_RETRIES} попыток (429)")
+
+
+INSERT_RETRIES = 6
+INSERT_RETRY_WAIT = 20.0
+
+
+def _insert_with_retry(client_box: dict, table: str, data, columns, database, log=print):
+    """INSERT с повтором: обрыв связи с ClickHouse не должен стоить всего куска.
+
+    Ночью 2026-09-27 SSH-туннель к ClickHouse оборвался (машина ушла в сон), и
+    дозагрузка 7 часов молотила API впустую — каждая вставка падала, каждый
+    кусок помечался неудачным, данные из уже скачанных страниц выбрасывались.
+    API-запросы при лимите 1/мин — самый дорогой ресурс здесь, терять их
+    из-за секундной недоступности базы нельзя.
+
+    client_box — изменяемая обёртка {'client': ...}: при обрыве соединение
+    пересоздаётся, и вызывающий код продолжает работать с новым клиентом.
+    """
+    last = None
+    for attempt in range(INSERT_RETRIES):
+        try:
+            client_box["client"].insert(table, data, column_names=columns)
+            return
+        except Exception as e:  # noqa: BLE001 — нас интересует любой сбой связи
+            last = e
+            wait = INSERT_RETRY_WAIT * (attempt + 1)
+            log(f"    ClickHouse недоступен ({str(e)[:120]}), "
+                f"повтор {attempt + 1}/{INSERT_RETRIES} через {wait:.0f}с")
+            time.sleep(wait)
+            try:
+                client_box["client"] = get_client(database=database)
+            except Exception as e2:  # noqa: BLE001
+                log(f"    пересоздать соединение не вышло: {str(e2)[:120]}")
+    raise RuntimeError(
+        f"ClickHouse недоступен после {INSERT_RETRIES} попыток, последняя ошибка: {last}"
+    )
 
 
 def get_client(database: str | None = None):
@@ -261,11 +309,11 @@ def get_client(database: str | None = None):
     )
 
 
-def _log_unmapped(client, cabinet: str, endpoint: str, report_id: int, fields: set[str], log=print):
+def _log_unmapped(box, cabinet: str, endpoint: str, report_id: int, fields: set[str], log=print):
     if not fields:
         return
     log(f"    ВНИМАНИЕ: поля вне схемы ({endpoint}): {sorted(fields)} — ушли в extra_fields")
-    client.insert(
+    box["client"].insert(
         "wb_api_unmapped_fields_log",
         [[cabinet, endpoint, report_id, f] for f in sorted(fields)],
         column_names=["cabinet", "endpoint", "report_id", "raw_field"],
@@ -290,7 +338,7 @@ def fetch_detailed_pages(token: str, report_id: int, pacer: _Pacer, log=print):
     полученные страницы.
     """
     cursor = 0
-    seen = 0
+    seen_cursors = set()
     while True:
         body = {"limit": PAGE_LIMIT, "rrdId": cursor}
         page = _post(token, DETAILED_PATH.format(report_id=report_id), body, pacer, log=log)
@@ -300,30 +348,52 @@ def fetch_detailed_pages(token: str, report_id: int, pacer: _Pacer, log=print):
         if not page:
             break
         yield page
-        seen += len(page)
-        new_cursor = max(int(r["rrdId"]) for r in page)
-        if new_cursor <= cursor:
+
+        # Курсор — rrdId ПОСЛЕДНЕЙ строки страницы, а не максимальный.
+        # Строки в ответе НЕ отсортированы по rrdId: на отчёте 292370717
+        # (CloudSix) первая страница шла 2889361109893 … 2889302569525 при
+        # max 2889923437304. Курсор от max перепрыгивал через строки —
+        # вторая страница начиналась ПОЗЖЕ, чем нужно, и данные терялись
+        # молча. Проверено 2026-09-28: с курсором по последней строке
+        # страница 2 начинается ровно с cursor+1, пересечение страниц 0 строк,
+        # отчёт полностью выбирается за 2 страницы (10000 + 5179).
+        # Отсюда же правило: НЕ сортировать и НЕ брать min/max от rrdId —
+        # порядок строк задаёт сервер, наше дело его не ломать.
+        new_cursor = int(page[-1]["rrdId"])
+        if new_cursor == cursor or new_cursor in seen_cursors:
             raise RuntimeError(
-                f"WB API detailed: курсор не растёт (rrdId={new_cursor} <= {cursor}) — "
+                f"WB API detailed: курсор повторяется (rrdId={new_cursor}) — "
                 f"прерываемся, чтобы не крутить бесконечный цикл"
             )
+        seen_cursors.add(new_cursor)
         cursor = new_cursor
         if len(page) < PAGE_LIMIT:
             break
 
 
 def ingest_period(cabinet: str, date_from: date, date_to: date, log=print,
-                  database: str | None = None, with_detailed: bool = True) -> dict:
+                  database: str | None = None, with_detailed: bool = True,
+                  pacer: _Pacer | None = None) -> dict:
     """Грузит отчёты WB за период: сводку по каждому отчёту (list) и,
     если with_detailed, все их строки (detailed/{reportId}).
 
     Идемпотентно: обе таблицы — ReplacingMergeTree (по cabinet+report_id и
     cabinet+rrd_id), повторный прогон того же периода перезапишет строки,
     а не задвоит их.
+
+    pacer — общий ограничитель частоты. Передавайте свой, если вызываете
+    функцию несколько раз подряд по ОДНОМУ кабинету (напр. дозагрузка
+    истории кусками, scripts/backfill_wb_api.py): свежий pacer на каждый
+    вызов считает, что запросов ещё не было, и первый запрос куска уходит
+    без паузы — то есть прямо в 429. Для РАЗНЫХ кабинетов общий pacer не
+    нужен и вреден: лимит у WB привязан к токену, а не к IP (проверено
+    2026-09-27 — два запроса подряд разными токенами оба прошли), так что
+    кабинеты грузятся параллельно, каждый со своим pacer.
     """
     token = get_wb_token(cabinet)
-    client = get_client(database=database)
-    pacer = _Pacer(log=log)
+    box = {"client": get_client(database=database)}
+    if pacer is None:
+        pacer = _Pacer(log=log)
 
     log(f"WB finance API: {cabinet}, период {date_from}..{date_to}")
     reports = fetch_report_list(token, date_from, date_to, pacer, log=log)
@@ -337,13 +407,11 @@ def ingest_period(cabinet: str, date_from: date, date_to: date, log=print,
         rec, unmapped = raw_to_record(raw, cabinet, SUMMARY_FIELDS)
         summary_records.append(rec)
         unmapped_summary.update(unmapped)
-    client.insert(
-        "wb_api_report_summary",
-        [[r.get(c) for c in SUMMARY_COLUMNS] for r in summary_records],
-        column_names=SUMMARY_COLUMNS,
-    )
+    _insert_with_retry(box, "wb_api_report_summary",
+                       [[r.get(c) for c in SUMMARY_COLUMNS] for r in summary_records],
+                       SUMMARY_COLUMNS, database, log=log)
     log(f"  Загружено {len(summary_records)} строк в wb_api_report_summary.")
-    _log_unmapped(client, cabinet, "list", 0, unmapped_summary, log=log)
+    _log_unmapped(box, cabinet, "list", 0, unmapped_summary, log=log)
 
     for r in summary_records:
         log(f"    отчёт {r['report_id']} (тип {r.get('report_type')}): "
@@ -362,14 +430,12 @@ def ingest_period(cabinet: str, date_from: date, date_to: date, log=print,
                 row, unmapped = raw_to_record(raw, cabinet, DETAILED_FIELDS)
                 records.append(row)
                 unmapped_detailed.update(unmapped)
-            client.insert(
-                "wb_api_realization",
-                [[r.get(c) for c in DETAILED_COLUMNS] for r in records],
-                column_names=DETAILED_COLUMNS,
-            )
+            _insert_with_retry(box, "wb_api_realization",
+                               [[r.get(c) for c in DETAILED_COLUMNS] for r in records],
+                               DETAILED_COLUMNS, database, log=log)
             total += len(records)
             log(f"      записано {len(records)} строк (всего {total})")
-        _log_unmapped(client, cabinet, "detailed", report_id, unmapped_detailed, log=log)
+        _log_unmapped(box, cabinet, "detailed", report_id, unmapped_detailed, log=log)
 
     log(f"  Итого строк детализации: {total}")
     return {"reports": len(reports), "summary_rows": len(summary_records), "detailed_rows": total}
