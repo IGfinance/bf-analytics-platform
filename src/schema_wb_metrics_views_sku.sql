@@ -102,6 +102,29 @@
 -- поэтому coalesce(..., '') в NOT IN обязателен — без него строки с
 -- payment_reason IS NULL выпали бы из обеих частей.
 
+-- ПРАВКА 2026-09-29 — payable_total приведён к "Итого к оплате" недельного
+-- сводного отчёта WB (решение владельца: эталон для WB — недельная сводка).
+-- Проверка шла ОТЧЁТ К ОТЧЁТУ по всем 550 отчётам 2026 года из API
+-- (wb_api_realization против wb_api_report_summary, метод list): сырые
+-- строки сходятся со сводкой по каждому показателю, а выплата WB
+-- тождественно равна
+--   К перечислению за товар − логистика(все строки) − штрафы − хранение
+--   − приёмка − удержания + доплаты − стоимость программы лояльности
+--   − баллы лояльности
+-- на всех 550 отчётах (diff ≤ 0.01). Наша формула расходилась в двух местах:
+--   1) логистика фильтровалась по payment_reason IN ('Логистика',
+--      'Коррекция логистики'). С 2026-09-01 WB проводит логистику
+--      операциями "Доставка" и "Коррекция стоимости доставки" — за сентябрь
+--      выпадало 1.67 млн ₽. Фильтр снят, логистика = все строки, как в
+--      правиле "Стоимость логистики" сводного отчёта;
+--   2) wibes_discount включал компенсацию скидки по программе лояльности
+--      (loyalty_discount_compensation). В сводке она "В том числе" — уже
+--      сидит внутри "К перечислению за товар", и выплата её отдельно НЕ
+--      содержит (правило "Итого к оплате" в reconciliation_rules_wb.yaml —
+--      тоже без неё). Прибавляя её, мы считали её дважды: +337 тыс. ₽ за
+--      2026 по проекту. Теперь wibes_discount = −(стоимость программы +
+--      баллы), то есть только то, что WB реально удерживает.
+--
 -- ГОЧТЯ при накате на прод: `CREATE OR REPLACE VIEW` сбрасывает ВСЕ
 -- `COMMENT COLUMN` на этой VIEW — после правки тела прогоняйте все
 -- ALTER-команды из конца файла заново (8 из 24 колонок; остальные
@@ -151,10 +174,13 @@ base AS (
         coalesce(sumIf(payable_to_seller,
             coalesce(lowerUTF8(trim(payment_reason)), '') NOT IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'возврат'), 0) AS corr_ret,
 
+        -- Логистика — по ВСЕМ строкам, без фильтра по payment_reason (как в
+        -- сводном отчёте, см. ПРАВКУ 2026-09-29 в заголовке): с 2026-09-01 WB
+        -- проводит её операцией "Доставка", а не "Логистика".
         coalesce(sumIf(delivery_service_cost,
-            payment_reason IN ('Логистика', 'Коррекция логистики') AND logistics_fines_corrections_type LIKE '%К клиенту%'), 0) AS direct_logistics,
+            logistics_fines_corrections_type LIKE '%К клиенту%'), 0) AS direct_logistics,
         coalesce(sumIf(delivery_service_cost,
-            payment_reason IN ('Логистика', 'Коррекция логистики') AND (logistics_fines_corrections_type NOT LIKE '%К клиенту%' OR logistics_fines_corrections_type IS NULL)), 0) AS reverse_logistics,
+            logistics_fines_corrections_type NOT LIKE '%К клиенту%' OR logistics_fines_corrections_type IS NULL), 0) AS reverse_logistics,
 
         coalesce(sum(total_fines), 0) AS sum_fines,
         coalesce(sum(wb_commission_correction), 0) AS sum_correction,
@@ -168,8 +194,6 @@ base AS (
             trim(REGEXP_REPLACE(REGEXP_REPLACE(logistics_fines_corrections_type, ',\\s*документ\\s*№\\s*\\d+', ''), '\\s+\\d+$', ''))
                 IN ('Оказание услуг «WB Продвижение»', 'Оказание услуг «ВБ.Продвижение»')), 0) AS sum_promo,
 
-        coalesce(sumIf(loyalty_discount_compensation, document_type = 'Продажа'), 0)
-          - coalesce(sumIf(loyalty_discount_compensation, document_type = 'Возврат'), 0) AS sum_loyalty_comp,
         coalesce(sum(loyalty_program_cost), 0)
           - 2 * coalesce(sumIf(loyalty_program_cost, document_type = 'Возврат'), 0) AS sum_loyalty_cost,
         coalesce(sum(loyalty_points_deducted), 0)
@@ -227,18 +251,18 @@ SELECT
     (-sum_storage)                                         AS storage_cost,
     (-sum_acceptance)                                      AS acceptance_cost,
     (-sum_deductions)                                      AS deductions,
-    (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) AS wibes_discount,
+    (-sum_loyalty_cost - sum_loyalty_points) AS wibes_discount,
     (-sum_promo)                                           AS promotion_cost,
     (
       (ah_sale - ah_ret) + (corr_sale - corr_ret) + (-direct_logistics) + (-reverse_logistics)
       + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
-      + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
+      + (-sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
     )                                                       AS payable_total,
     (-coalesce(c.cogs_amount, 0))                           AS cogs,
     (
       (ah_sale - ah_ret) + (corr_sale - corr_ret) + (-direct_logistics) + (-reverse_logistics)
       + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
-      + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
+      + (-sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
       - coalesce(c.cogs_amount, 0)
     )                                                       AS gross_profit,
     toInt64(coalesce(c.qty_covered, 0))                     AS cogs_qty_covered,
