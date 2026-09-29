@@ -61,10 +61,13 @@ base AS (
         coalesce(sumIf(payable_to_seller,
             coalesce(lowerUTF8(trim(payment_reason)), '') NOT IN (SELECT v FROM cs_k_types) AND lowerUTF8(trim(document_type)) = 'возврат'), 0) AS corr_ret,
 
+        -- Логистика — по ВСЕМ строкам, без фильтра по payment_reason (как в
+        -- сводном отчёте, см. ПРАВКУ 2026-09-29 в заголовке): с 2026-09-01 WB
+        -- проводит её операцией "Доставка", а не "Логистика".
         coalesce(sumIf(delivery_service_cost,
-            payment_reason IN ('Логистика', 'Коррекция логистики') AND logistics_fines_corrections_type LIKE '%К клиенту%'), 0) AS direct_logistics,
+            logistics_fines_corrections_type LIKE '%К клиенту%'), 0) AS direct_logistics,
         coalesce(sumIf(delivery_service_cost,
-            payment_reason IN ('Логистика', 'Коррекция логистики') AND (logistics_fines_corrections_type NOT LIKE '%К клиенту%' OR logistics_fines_corrections_type IS NULL)), 0) AS reverse_logistics,
+            logistics_fines_corrections_type NOT LIKE '%К клиенту%' OR logistics_fines_corrections_type IS NULL), 0) AS reverse_logistics,
 
         coalesce(sum(total_fines), 0) AS sum_fines,
         coalesce(sum(wb_commission_correction), 0) AS sum_correction,
@@ -78,8 +81,6 @@ base AS (
             trim(REGEXP_REPLACE(REGEXP_REPLACE(logistics_fines_corrections_type, ',\\s*документ\\s*№\\s*\\d+', ''), '\\s+\\d+$', ''))
                 IN ('Оказание услуг «WB Продвижение»', 'Оказание услуг «ВБ.Продвижение»')), 0) AS sum_promo,
 
-        coalesce(sumIf(loyalty_discount_compensation, document_type = 'Продажа'), 0)
-          - coalesce(sumIf(loyalty_discount_compensation, document_type = 'Возврат'), 0) AS sum_loyalty_comp,
         coalesce(sum(loyalty_program_cost), 0)
           - 2 * coalesce(sumIf(loyalty_program_cost, document_type = 'Возврат'), 0) AS sum_loyalty_cost,
         coalesce(sum(loyalty_points_deducted), 0)
@@ -137,18 +138,18 @@ SELECT
     (-sum_storage)                                         AS storage_cost,
     (-sum_acceptance)                                      AS acceptance_cost,
     (-sum_deductions)                                      AS deductions,
-    (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) AS wibes_discount,
+    (-sum_loyalty_cost - sum_loyalty_points) AS wibes_discount,
     (-sum_promo)                                           AS promotion_cost,
     (
       (ah_sale - ah_ret) + (corr_sale - corr_ret) + (-direct_logistics) + (-reverse_logistics)
       + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
-      + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
+      + (-sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
     )                                                       AS payable_total,
     (-coalesce(c.cogs_amount, 0))                           AS cogs,
     (
       (ah_sale - ah_ret) + (corr_sale - corr_ret) + (-direct_logistics) + (-reverse_logistics)
       + (-sum_fines) + (-sum_correction) + (-sum_storage) + (-sum_acceptance) + (-sum_deductions)
-      + (sum_loyalty_comp - sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
+      + (-sum_loyalty_cost - sum_loyalty_points) + (-sum_promo)
       - coalesce(c.cogs_amount, 0)
     )                                                       AS gross_profit,
     toInt64(coalesce(c.qty_covered, 0))                     AS cogs_qty_covered,
@@ -204,16 +205,16 @@ ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN spp_amount 'СПП (�
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN wb_commission 'Комиссия Wildberries = розничная цена с СПП минус сумма к перечислению продавцу. Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN sales_corrections 'Корректировки продаж — payable_to_seller по строкам вне белого списка cs_k_types ("Коррекция продаж", "Корректировка эквайринга", "Услуга платная доставка"), знак по document_type. Входит в payable_for_goods. Добавлена 2026-09-27, до этого терялась. Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN payable_for_goods 'К перечислению за товар (payable_to_seller), продажа минус возврат, ВКЛЮЧАЯ sales_corrections — тождественно формуле сводного отчёта WB (reconciliation_rules_wb.yaml). Формула — в wb_metrics_by_sku_month_api.';
-ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN logistics_direct 'Логистика "к клиенту" (прямая). Формула — в wb_metrics_by_sku_month_api.';
+ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN logistics_direct 'Логистика "к клиенту" (прямая), по всем строкам — с 2026-09 WB проводит её операцией "Доставка". Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN logistics_reverse 'Логистика обратная (не "к клиенту" или тип не указан). Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN fines 'Штрафы WB (total_fines), знак инвертирован (расход). Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN commission_correction 'Доплаты — из wb_commission_correction ("Корректировка Вознаграждения Вайлдберриз"). Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN storage_cost 'Хранение (storage_cost), знак инвертирован (расход). Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN acceptance_cost 'Платная приёмка — из acceptance_operations ("Операции на приемке"). Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN deductions 'Удержание (deductions) за вычетом строк, относящихся к продвижению. Формула — в wb_metrics_by_sku_month_api.';
-ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN wibes_discount 'Скидка Wibes = компенсация минус расходы программы лояльности. Формула — в wb_metrics_by_sku_month_api.';
+ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN wibes_discount 'Скидка Wibes = −(стоимость участия в программе лояльности + удержанные баллы). Компенсацию скидки НЕ содержит с 2026-09-29: она уже внутри К перечислению за товар. Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN promotion_cost '"Продвижение WB"/"Продвижение ВБ" объединены в одну метрику. Формула — в wb_metrics_by_sku_month_api.';
-ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods (с корректировками продаж) + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. Себестоимость сюда НЕ входит — на этой метрике стоят сверки. Формула — в wb_metrics_by_sku_month_api.';
+ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN payable_total 'Итог "К перечислению" = payable_for_goods (с корректировками продаж) + логистика + штрафы + доплаты + хранение + приёмка + удержание + скидка Wibes + продвижение. Тождественно равен "Итого к оплате" недельного сводного отчёта WB (проверено на 550 отчётах 2026 года). Себестоимость сюда НЕ входит — на этой метрике стоят сверки. Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN cogs 'Себестоимость проданного товара, ₽, знак инвертирован (расход). Сопоставляется поартикульно по неделе операции из wb_cogs_weekly. Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN gross_profit 'Валовая прибыль = payable_total + cogs. Формула — в wb_metrics_by_sku_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_month_api COMMENT COLUMN cogs_qty_covered 'Проданных единиц с известной себестоимостью. Формула — в wb_metrics_by_sku_month_api.';
