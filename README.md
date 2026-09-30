@@ -43,11 +43,9 @@
 ├── scripts/
 │   ├── create_user.py           # завести/обновить пользователя, выдать доступ к проекту
 │   └── deploy.sh                # деплой на прод (rsync + systemd restart)
-├── docs/                        # глоссарий, видение платформы
+├── docs/                        # живая документация (см. docs/README.md)
 ├── work/tz/                     # ТЗ подрядчику, ревью, журнал задач (active/done/review)
-├── .claude/                     # скиллы write-task/review-task, архитектурные стандарты
-├── DESIGN.md                    # дизайн-система веб-формы
-└── WIKI.md                      # путь к базе знаний проекта (Obsidian)
+└── .claude/                     # скиллы write-task/review-task, архитектурные стандарты
 ```
 
 ## Установка
@@ -99,12 +97,15 @@ bash scripts/deploy.sh
 
 ## Документация
 
-- [`DESIGN.md`](DESIGN.md) — дизайн-система веб-формы (палитра, типографика, layout)
-- [`docs/glossary.md`](docs/glossary.md) — термины (проект, кабинет, бренд)
-- [`docs/vision.md`](docs/vision.md) — куда движется платформа, прогресс по ТЗ
+- [`docs/README.md`](docs/README.md) — карта документации: что где искать
+- [`docs/product/vision.md`](docs/product/vision.md) — куда движется платформа, прогресс по ТЗ
+- [`docs/product/architecture-map.md`](docs/product/architecture-map.md) — как всё устроено технически сейчас
+- [`docs/product/design-system.md`](docs/product/design-system.md) — дизайн-система веб-формы (палитра, типографика, layout)
+- [`docs/reference/glossary.md`](docs/reference/glossary.md) — термины (проект, кабинет, бренд)
+- [`docs/onboarding/new-client-checklist.md`](docs/onboarding/new-client-checklist.md) — чек-лист вопросов для подключения нового клиента
 - [`work/tz/`](work/tz/) — постановки задач подрядчику и ревью реализации
   (`active/` — в работе, `done/` — принято, `review/` — отчёты ревью)
-- [`WIKI.md`](WIKI.md) — путь к базе знаний проекта в Obsidian-хранилище
+- [`docs/knowledge-base.md`](docs/knowledge-base.md) — путь к базе знаний проекта в Obsidian-хранилище
 
 ## Лицензия
 
