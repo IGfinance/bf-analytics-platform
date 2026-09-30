@@ -1,19 +1,28 @@
 -- Себестоимость «Алабуга Боттлинг» по месяцам — БЕЗ партионного учёта,
 -- «ставка месяца», совпадающая с текущим учётом 1С (счёт 90.02.1).
 --
--- ПОЧЕМУ НЕ ПАРТИИ (разведка января 2026, см. вики): 1С не считает
+-- ПОЧЕМУ НЕ ПАРТИИ (разведка 2026-01..08, см. вики): 1С не считает
 -- себестоимость при отгрузке — строки РеализацияТоваровУслуг проведены
 -- почти на нули. Реальная себестоимость появляется при закрытии месяца
 -- (Document_РегламентнаяОперация): котёл «20.01 Основное производство»
--- за месяц по номенклатурной группе делится на
---   * Дт 90.02.1 / Кт 20.01 — материалы и прямые расходы списываются в
---     себестоимость продаж СРАЗУ, минуя склад;
---   * Дт 40 → Дт 43 — на склад готовой продукции уходит только
---     общепроизводственные расходы (счёт 25), продукция на складе
---     оценена только ими;
---   * Дт 90.02.1 / Кт 43 — потом эта часть списывается при продаже.
--- Причина «материалы минуют склад» не выяснена (вопрос бухгалтеру) —
--- пока принято как есть: считаем «как в учёте».
+-- за месяц по номенклатурной группе списывается
+--   * Дт 40 → Дт 43 — на склад готовой продукции (выпуск);
+--   * Дт 90.02.1 / Кт 20.01 — сразу в себестоимость продаж;
+-- а при продаже Дт 90.02.1 / Кт 43 списывает то, что лежало на складе.
+-- Соотношение «на склад / сразу в продажи» ПЛАВАЕТ по месяцам (январь и
+-- июнь — в основном сразу в продажи, остальные — в основном на склад;
+-- в январе казалось, что на склад идёт только ОПР — это был частный
+-- случай, не правило). Поэтому структуру списанной себестоимости по
+-- поступлениям 20.01 того же месяца как факт брать нельзя.
+--
+-- ПРИНЯТАЯ МОДЕЛЬ («ставка месяца»): ИТОГ себестоимости продаж месяца по
+-- номенклатурной группе = ровно то, что проведено в Дт 90.02.1 (как в
+-- учёте). РАЗБИВКА итога на слои/статьи — пропорционально структуре
+-- затрат 20.01 той же группы за тот же месяц (это распределение, не факт:
+-- то, что списано со склада, могло быть выпущено в прошлые месяцы).
+-- Если у группы в месяце нет поступлений в 20.01 (продали со склада, не
+-- производя) — сумма идёт слоем «Без разбивки», а не размазывается по
+-- чужой структуре.
 --
 -- ОДНА ТАБЛИЦА ПРОВОДОК + VIEW. Вместо выгрузки всего журнала
 -- (155 тыс. проводок) хранится узкий срез — только проводки по счетам
@@ -73,7 +82,7 @@ ALTER TABLE bottling.cost_entries COMMENT COLUMN amount 'Сумма провод
 --            'Прочие прямые'   — всё остальное в 20.01 (зарплата цеха,
 --                                амортизация и т.п. напрямую).
 -- ---------------------------------------------------------------------
-CREATE VIEW IF NOT EXISTS bottling.cost_production AS
+CREATE OR REPLACE VIEW bottling.cost_production AS
 SELECT
     toStartOfMonth(period)  AS month,
     dr_ext1                 AS nomenclature_group,
@@ -88,57 +97,61 @@ WHERE dr_account = '20.01'
 GROUP BY month, nomenclature_group, layer, cost_item, material;
 
 -- ---------------------------------------------------------------------
--- 2. Себестоимость продаж за месяц — ТО, ЧТО ПРОВЕДЕНО В 90.02.1 —
---    разложенная на слои. Ключ: месяц x номенклатурная группа x слой.
---
---    Слои:
---      'Материалы'          — Дт 20.01/Кт 10.01 того же месяца и группы
---                             (списаны в продажи сразу);
---      'Прочие прямые'      — остальные прямые затраты 20.01 (кроме 25);
---      'ОПР со склада'      — Дт 90.02.1 / Кт 43 (общепроизводственные,
---                             прошедшие через готовую продукцию; БЕЗ
---                             разбивки по статьям — 1С её не хранит,
---                             придумывать пропорцию не стали);
---      'Вспомогательное'    — Дт 90.02.1 / Кт 23.01.
---    Прямые слои берутся из ПОСТУПЛЕНИЙ в 20.01, а не из списания:
---    списание 20.01→90.02.1 у 1С идёт одной суммой на группу без
---    статей. Совпадение проверяется во VIEW cost_of_sales_recon.
+-- 2. Себестоимость продаж за месяц (ИТОГ = Дт 90.02.1, как в учёте),
+--    разложенная на слои и статьи ПРОПОРЦИОНАЛЬНО структуре затрат 20.01
+--    той же группы за тот же месяц (cost_production). Слои: Материалы /
+--    ОПР / Прочие прямые; либо 'Без разбивки' — если у группы в месяце
+--    не было поступлений в 20.01. basis говорит, откуда разбивка.
 -- ---------------------------------------------------------------------
-CREATE VIEW IF NOT EXISTS bottling.cost_of_sales AS
-SELECT month, nomenclature_group, layer, cost_item, material, amount FROM
-(
-    SELECT month, nomenclature_group, layer, cost_item, material, amount
-    FROM bottling.cost_production
-    WHERE layer IN ('Материалы', 'Прочие прямые')
-
-    UNION ALL
-
-    SELECT
-        toStartOfMonth(period) AS month,
-        dr_ext1                AS nomenclature_group,
-        multiIf(cr_account = '43',   'ОПР со склада',
-                cr_account = '23.01','Вспомогательное',
-                                     'Прочее со счетов') AS layer,
-        ''                     AS cost_item,
-        ''                     AS material,
-        sum(amount)            AS amount
-    FROM bottling.cost_entries
-    WHERE dr_account LIKE '90.02%' AND cr_account != '20.01'
-    GROUP BY month, nomenclature_group, layer
-);
-
--- ---------------------------------------------------------------------
--- 3. Сверка с учётом: сколько проведено в Дт 90.02.1 (эталон) против
---    суммы слоёв. diff != 0 — повод разбираться (незавершёнка в 20.01 на
---    конец месяца, возвраты и т.п.), а не подгонять.
--- ---------------------------------------------------------------------
-CREATE VIEW IF NOT EXISTS bottling.cost_of_sales_recon AS
+CREATE OR REPLACE VIEW bottling.cost_of_sales AS
+WITH
+    booked AS
+    (
+        SELECT toStartOfMonth(period) AS month, dr_ext1 AS nomenclature_group, sum(amount) AS cogs
+        FROM bottling.cost_entries
+        WHERE dr_account LIKE '90.02%'
+        GROUP BY month, nomenclature_group
+    ),
+    prod_tot AS
+    (
+        SELECT month, nomenclature_group, sum(amount) AS total
+        FROM bottling.cost_production
+        GROUP BY month, nomenclature_group
+        HAVING total > 0
+    )
 SELECT
-    b.month                AS month,
-    b.nomenclature_group   AS nomenclature_group,
-    b.booked               AS booked_9002,
-    l.layers               AS layers_total,
-    round(b.booked - l.layers, 2) AS diff
+    b.month AS month, b.nomenclature_group AS nomenclature_group,
+    p.layer AS layer, p.cost_item AS cost_item, p.material AS material,
+    b.cogs * p.amount / t.total AS amount,
+    'по структуре выпуска месяца' AS basis
+FROM booked AS b
+INNER JOIN bottling.cost_production AS p ON p.month = b.month AND p.nomenclature_group = b.nomenclature_group
+INNER JOIN prod_tot AS t ON t.month = b.month AND t.nomenclature_group = b.nomenclature_group
+
+UNION ALL
+
+SELECT
+    b.month, b.nomenclature_group,
+    'Без разбивки' AS layer, '' AS cost_item, '' AS material,
+    b.cogs AS amount,
+    'нет выпуска группы в месяце' AS basis
+FROM booked AS b
+WHERE (b.month, b.nomenclature_group) NOT IN (SELECT month, nomenclature_group FROM prod_tot);
+
+-- ---------------------------------------------------------------------
+-- 3. Сверка: проведено в Дт 90.02.1 (эталон) против суммы слоёв
+--    (по построению diff ≈ 0) + доля «Без разбивки» — то, что не удалось
+--    разложить по структуре.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW bottling.cost_of_sales_recon AS
+SELECT
+    b.month AS month,
+    b.nomenclature_group AS nomenclature_group,
+    b.booked AS booked_9002,
+    l.layers AS layers_total,
+    round(b.booked - l.layers, 2) AS diff,
+    l.no_split AS no_split_amount,
+    if(b.booked != 0, l.no_split / b.booked, 0) AS no_split_share
 FROM
 (
     SELECT toStartOfMonth(period) AS month, dr_ext1 AS nomenclature_group, sum(amount) AS booked
@@ -146,9 +159,23 @@ FROM
     WHERE dr_account LIKE '90.02%'
     GROUP BY month, nomenclature_group
 ) AS b
-FULL JOIN
+LEFT JOIN
 (
-    SELECT month, nomenclature_group, sum(amount) AS layers
+    SELECT month, nomenclature_group, sum(amount) AS layers, sumIf(amount, layer = 'Без разбивки') AS no_split
     FROM bottling.cost_of_sales
     GROUP BY month, nomenclature_group
-) AS l USING (month, nomenclature_group);
+) AS l ON l.month = b.month AND l.nomenclature_group = b.nomenclature_group;
+
+-- ---------------------------------------------------------------------
+-- 4. Контроль полноты загрузки: по каждому месяцу котёл 20.01 должен
+--    закрываться (Дт = Кт). diff != 0 — месяц не закрыт в 1С (текущий)
+--    или проводки загружены не полностью.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW bottling.cost_account_20_check AS
+SELECT
+    toStartOfMonth(period) AS month,
+    sumIf(amount, dr_account = '20.01') AS debit_20,
+    sumIf(amount, cr_account = '20.01') AS credit_20,
+    round(debit_20 - credit_20, 2) AS diff
+FROM bottling.cost_entries
+GROUP BY month;
