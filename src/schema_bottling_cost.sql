@@ -213,7 +213,12 @@ CREATE TABLE IF NOT EXISTS bottling.nomenclature_group
 ENGINE = ReplacingMergeTree(loaded_at)
 ORDER BY nomenclature_key;
 
--- Строки реализации (проведённые) с номенклатурной группой.
+-- Строки реализации (проведённые) с номенклатурной группой — ТОЛЬКО
+-- тех месяцев, которые ЗАКРЫТЫ в 1С (котёл 20.01 сходится, см.
+-- cost_account_20_check): для более ранних месяцев проводок в cost_entries
+-- нет, а в открытом месяце (себестоимость ещё не списана) выручка без
+-- себестоимости давала бы «маржу» ~100%. Месяц появляется сам, когда
+-- проводки закрытого месяца догружены в cost_entries.
 CREATE OR REPLACE VIEW bottling.cost_sales_lines AS
 SELECT
     o.ref_key AS ref_key, o.number AS number, o.date AS date,
@@ -225,7 +230,8 @@ SELECT
     g.nomenclature_group AS nomenclature_group,
     i.quantity AS quantity,
     i.amount AS amount
-FROM (SELECT * FROM bottling.realization_orders FINAL WHERE posted = 1 AND deletion_mark = 0) AS o
+FROM (SELECT * FROM bottling.realization_orders FINAL WHERE posted = 1 AND deletion_mark = 0
+      AND toStartOfMonth(date) IN (SELECT month FROM bottling.cost_account_20_check WHERE abs(diff) < 1 AND credit_20 > 0)) AS o
 INNER JOIN (SELECT * FROM bottling.realization_items FINAL) AS i ON i.ref_key = o.ref_key
 LEFT JOIN (SELECT * FROM bottling.nomenclature_group FINAL) AS g ON g.nomenclature_key = i.nomenclature_key;
 
@@ -280,12 +286,9 @@ LEFT JOIN bottling.cost_account_20_check AS c ON c.month = k.month;
 -- со ставкой группы (cost). Это грубая оценка; если нужна только
 -- «чистая» себестоимость по группе — смотрите cost, а не cost_total.
 CREATE OR REPLACE VIEW bottling.cost_pool_month AS
-SELECT
-    r.month AS month,
-    sumIf(r.cogs, r.qty_sold = 0) AS pool_cost,
-    (SELECT sum(amount) FROM bottling.cost_sales_lines AS l WHERE l.month = r.month) AS month_revenue
-FROM bottling.cost_rate_month AS r
-GROUP BY r.month;
+SELECT r.month AS month, r.pool_cost AS pool_cost, m.month_revenue AS month_revenue
+FROM (SELECT month, sumIf(cogs, qty_sold = 0) AS pool_cost FROM bottling.cost_rate_month GROUP BY month) AS r
+LEFT JOIN (SELECT month, sum(amount) AS month_revenue FROM bottling.cost_sales_lines GROUP BY month) AS m ON m.month = r.month;
 
 -- Себестоимость и маржа по строке реализации (заказ клиенту).
 --   cost       — по ставке группы (количество × ₽/шт группы);
@@ -340,3 +343,43 @@ SELECT
     cost_pool AS cost
 FROM bottling.cost_order_lines
 WHERE cost_pool != 0;
+
+-- Длинная сводка для дашборда: месяц x компания x группа x номенклатура x
+-- показатель. Один источник под общие фильтры Период/Компания/Группа
+-- (у Metabase field filter привязан к одному полю одной таблицы).
+-- sort — порядок строк показателей в кросс-табе. ОДИН проход по
+-- cost_order_lines (раньше — 4 UNION ALL-ветки, каждая пересчитывала
+-- вложенные VIEW, ≈18 с на месяц и 504 в Metabase): слои строки =
+-- cost × доля слоя в cost_of_sales группы за месяц.
+CREATE OR REPLACE VIEW bottling.cost_summary_long AS
+WITH shares AS
+(
+    SELECT month, nomenclature_group, groupArray((layer, layer_amount / total)) AS ls
+    FROM
+    (
+        SELECT month, nomenclature_group, layer, layer_amount,
+               sum(layer_amount) OVER (PARTITION BY month, nomenclature_group) AS total
+        FROM
+        (
+            SELECT month, nomenclature_group, layer, sum(amount) AS layer_amount
+            FROM bottling.cost_of_sales GROUP BY month, nomenclature_group, layer
+        )
+    )
+    WHERE total != 0
+    GROUP BY month, nomenclature_group
+)
+SELECT
+    l.month AS month, l.counterparty AS counterparty,
+    l.nomenclature_group AS nomenclature_group, l.nomenclature AS nomenclature,
+    m.1 AS metric, m.2 AS sort, m.3 AS amount
+FROM bottling.cost_order_lines AS l
+LEFT JOIN shares AS s ON s.month = l.month AND s.nomenclature_group = l.nomenclature_group
+ARRAY JOIN arrayConcat(
+    [('Выручка', toUInt8(1), toFloat64(l.revenue)),
+     ('Себестоимость (итого)', toUInt8(7), toFloat64(l.cost_total)),
+     ('Маржа', toUInt8(8), toFloat64(l.margin_total))],
+    if(l.cost_pool != 0, [('Не привязана к группе (пул месяца)', toUInt8(6), toFloat64(l.cost_pool))], []),
+    arrayMap(x -> (x.1,
+                   toUInt8(multiIf(x.1 = 'Материалы', 2, x.1 = 'ОПР', 3, x.1 = 'Прочие прямые', 4, x.1 = 'Без разбивки', 5, 6)),
+                   toFloat64(l.cost * x.2)), s.ls)
+) AS m;
