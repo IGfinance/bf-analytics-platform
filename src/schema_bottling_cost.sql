@@ -229,10 +229,11 @@ SELECT
     i.nomenclature AS nomenclature,
     g.nomenclature_group AS nomenclature_group,
     i.quantity AS quantity,
-    i.amount AS amount
+    if(o.amount_includes_vat = 1, i.raw_amount - i.vat_amount, i.raw_amount) AS amount  -- выручка БЕЗ НДС (см. realization_revenue)
 FROM (SELECT * FROM bottling.realization_orders FINAL WHERE posted = 1 AND deletion_mark = 0
       AND toStartOfMonth(date) IN (SELECT month FROM bottling.cost_account_20_check WHERE abs(diff) < 1 AND credit_20 > 0)) AS o
-INNER JOIN (SELECT * FROM bottling.realization_items FINAL) AS i ON i.ref_key = o.ref_key
+INNER JOIN (SELECT ref_key, line_number, nomenclature_key, nomenclature, quantity, vat_amount, amount AS raw_amount
+            FROM bottling.realization_items FINAL) AS i ON i.ref_key = o.ref_key
 LEFT JOIN (SELECT * FROM bottling.nomenclature_group FINAL) AS g ON g.nomenclature_key = i.nomenclature_key;
 
 -- Ставка месяца по группе.
@@ -344,6 +345,19 @@ SELECT
 FROM bottling.cost_order_lines
 WHERE cost_pool != 0;
 
+-- Возвраты от покупателей (bottling.returns_net, сумма БЕЗ НДС) по тем же
+-- закрытым месяцам и с той же номенклатурной группой, что и строки
+-- реализации. Вычитаются из выручки: «Чистая выручка» = Выручка − Возвраты.
+CREATE OR REPLACE VIEW bottling.cost_returns_lines AS
+SELECT
+    r.ref_key AS ref_key, r.number AS number, r.date AS date, r.month AS month,
+    r.counterparty AS counterparty, r.nomenclature AS nomenclature,
+    g.nomenclature_group AS nomenclature_group,
+    r.quantity AS quantity, r.amount AS amount
+FROM bottling.returns_net AS r
+LEFT JOIN (SELECT * FROM bottling.nomenclature_group FINAL) AS g ON g.nomenclature_key = r.nomenclature_key
+WHERE r.month IN (SELECT month FROM bottling.cost_account_20_check WHERE abs(diff) < 1 AND credit_20 > 0);
+
 -- Длинная сводка для дашборда: месяц x компания x группа x номенклатура x
 -- показатель. Один источник под общие фильтры Период/Компания/Группа
 -- (у Metabase field filter привязан к одному полю одной таблицы).
@@ -382,4 +396,15 @@ ARRAY JOIN arrayConcat(
     arrayMap(x -> (x.1,
                    toUInt8(multiIf(x.1 = 'Материалы', 2, x.1 = 'ОПР', 3, x.1 = 'Прочие прямые', 4, x.1 = 'Без разбивки', 5, 6)),
                    toFloat64(l.cost * x.2)), s.ls)
-) AS m;
+) AS m
+
+UNION ALL
+
+-- возвраты: метрика 'Возвраты' (+) и уменьшение 'Маржи' (−)
+SELECT
+    r.month AS month, r.counterparty AS counterparty,
+    r.nomenclature_group AS nomenclature_group, r.nomenclature AS nomenclature,
+    m.1 AS metric, m.2 AS sort, m.3 AS amount
+FROM bottling.cost_returns_lines AS r
+ARRAY JOIN [('Возвраты', toUInt8(9), toFloat64(r.amount)),
+            ('Маржа', toUInt8(8), toFloat64(-r.amount))] AS m;

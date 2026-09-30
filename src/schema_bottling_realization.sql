@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS bottling.realization_items
     coefficient       Float64,  -- Коэффициент пересчёта единицы измерения
     quantity          Float64,  -- Количество проданных единиц
     price             Float64,  -- Цена за единицу
-    amount            Float64,  -- Сумма строки — БЕЗ НДС, это и есть выручка по строке
+    amount            Float64,  -- Сумма строки — С НДС или БЕЗ НДС в зависимости от realization_orders.amount_includes_vat (см. VIEW realization_revenue)
     vat_rate          String,   -- СтавкаНДС (напр. 'НДС20')
     vat_amount        Float64,  -- СуммаНДС строки
 
@@ -93,13 +93,25 @@ ENGINE = ReplacingMergeTree(loaded_at)
 ORDER BY (ref_key, line_number);
 
 ALTER TABLE bottling.realization_items COMMENT COLUMN ref_key 'GUID документа-шапки (Ref_Key). Соединяется с realization_orders.ref_key. У одного ref_key может быть несколько строк (несколько проданных товаров в одной продаже).';
-ALTER TABLE bottling.realization_items COMMENT COLUMN amount 'Сумма строки БЕЗ НДС — это и есть выручка по этому товару в этой продаже. С учётом НДС — amount + vat_amount.';
+ALTER TABLE bottling.realization_items COMMENT COLUMN amount 'Сумма строки как в 1С: если в шапке amount_includes_vat = 1 — УЖЕ С НДС, если 0 — БЕЗ НДС. Чистая выручка (без НДС) — во VIEW realization_revenue.amount; не суммировать эту колонку напрямую.';
 
 -- Выручка = realization_orders JOIN realization_items ПО ref_key,
 -- отфильтрованные posted=1 и deletion_mark=0. FINAL обязателен у обеих
 -- таблиц (ReplacingMergeTree, без FINAL повторная загрузка считалась бы
 -- дважды).
-CREATE VIEW IF NOT EXISTS bottling.realization_revenue AS
+-- ВАЖНО про НДС (исправлено 2026-09-30, сверка с ОСВ по счёту 90.01 за
+-- 2026): «Сумма» строки в 1С — С НДС, если в шапке СуммаВключаетНДС = 1, и
+-- БЕЗ НДС, если 0 (такие документы в 1С проводятся как сумма + НДС).
+-- Раньше amount брали как есть и считали «без НДС» — выручка была
+-- завышена на НДС в документах с флагом 1 (~85% суммы). Теперь:
+--   amount          = выручка БЕЗ НДС (чистая);
+--   amount_with_vat = выручка С НДС — то, что 1С проводит в Кт 90.01.1
+--                     (сверка: сумма по месяцу минус возвраты — bottling.returns_net —
+--                     совпадает с оборотом Кт 90.01.1 до копеек, остаток ≤ 0.02%).
+-- Внутренний подзапрос переименовывает исходную колонку в raw_amount: в
+-- ClickHouse псевдоним `AS amount` перекрывает колонку `amount` в других
+-- выражениях того же SELECT.
+CREATE OR REPLACE VIEW bottling.realization_revenue AS
 SELECT
     o.ref_key                       AS ref_key,
     o.number                        AS number,
@@ -113,10 +125,11 @@ SELECT
     i.quantity                      AS quantity,
     i.unit                          AS unit,
     i.price                         AS price,
-    i.amount                        AS amount,
+    if(o.amount_includes_vat = 1, i.raw_amount - i.vat_amount, i.raw_amount) AS amount,
     i.vat_amount                    AS vat_amount,
-    (i.amount + i.vat_amount)       AS amount_with_vat
+    if(o.amount_includes_vat = 1, i.raw_amount, i.raw_amount + i.vat_amount) AS amount_with_vat
 FROM (SELECT * FROM bottling.realization_orders FINAL WHERE posted = 1 AND deletion_mark = 0) AS o
-INNER JOIN (SELECT * FROM bottling.realization_items FINAL) AS i ON i.ref_key = o.ref_key;
+INNER JOIN (SELECT ref_key, line_number, nomenclature, quantity, unit, price, vat_amount, amount AS raw_amount
+            FROM bottling.realization_items FINAL) AS i ON i.ref_key = o.ref_key;
 
-ALTER TABLE bottling.realization_revenue COMMENT COLUMN amount 'Выручка по строке, БЕЗ НДС. Источник истины для метрики "выручка" — сумма этой колонки, сгруппированная по month/counterparty/nomenclature.';
+ALTER TABLE bottling.realization_revenue COMMENT COLUMN amount 'Выручка по строке, БЕЗ НДС (чистая). Источник истины для метрики "выручка" — сумма этой колонки, сгруппированная по month/counterparty/nomenclature. С НДС — amount_with_vat.';
