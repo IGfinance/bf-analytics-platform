@@ -1,49 +1,94 @@
 -- Metabase: "Визуал - Bottling - Выручка по компаниям и месяцам" (id 209,
--- сводная таблица: строки — компания, столбцы — месяц). Коллекция
--- "Bottling | Админка" (15). Дашборд: "Дашборд - Bottling - Выручка" (id
--- 16, dashcard 91) — сменила там "Визуал - Bottling - Выручка по
--- месяцам" (id 206, столбчатый график), которая с дашборда снята, но не
--- удалена (лежит в коллекции 15).
---
+-- сводная таблица: строки — компания (+ строка "ИТОГО" сверху), столбцы
+-- — месяц в формате МММ-ГГ (+ столбец "Итого <ГГ>" после декабря каждого
+-- года). Коллекция "Bottling | Админка" (15). Дашборд: "Дашборд -
+-- Bottling - Выручка" (id 16, dashcard 91).
+-- ·
 -- Источник — VIEW bottling.realization_revenue напрямую (формула выручки
 -- и фильтр проведения уже внутри неё, см.
 -- src/schema_bottling_realization.sql) — тот же источник истины, что у
--- Модели "Модель - Bottling - Выручка по месяцам" (id 205), просто
--- другой грейн: контрагент x месяц, без номенклатуры в GROUP BY — она
--- доступна только как фильтр.
---
--- Фильтры (дашборд, id 16): Компания/Продукт — сентинел '' (пусто = все),
--- как у doctor_name в Реальт-юнитке (card 187/183). Период — пара
+-- Модели "Модель - Bottling - Выручка по месяцам" (id 205).
+-- ·
+-- Фильтры (дашборд, id 16): Компания/Продукт — Field Filter (checkbox-
+-- список значений из справочных карточек bottling_companies_list.sql /
+-- bottling_nomenclature_list.sql), НЕ текстовый сентинел — поддерживает
+-- множественный выбор "IN (...)" из коробки. Период — пара
 -- start_month/end_month, опциональные скобки [[ ]], как в card 189/190
--- (когорты Реальта). Значения выпадающих списков Компания/Продукт берутся
--- из служебных карточек bottling_companies_list.sql (id 207) /
--- bottling_nomenclature_list.sql (id 208), values_source_type: card.
---
--- Визуализация: display "table" + visualization_settings
--- {"table.pivot": true, "table.pivot_column": "Месяц", "table.cell_column":
--- "Выручка"} — клиентский (JS) разворот 3-колоночного результата в
--- кросс-таб, без серверного pivot-постпроцессинга (на native SQL он
--- молча ломается, см. вики: "Metabase pivot не работает на native SQL").
---
--- ВАЖНО — лимит строк 2000 (bare-rows cap Metabase для native-запросов,
--- не обходится добавлением LIMIT в SQL). Без фильтра периода полный
--- грейн контрагент x месяц даёт 8387 реальных строк (проверено
--- 2026-09-30) — вьюха молча обрежется до первых 2000 (Metabase покажет
--- предупреждение "показаны первые 2000 строк", но по умолчанию картина
--- будет неполной). Поэтому у дашбордного параметра "С месяца" задан
--- дефолт 2025-01 (999 строк на 2026-09-30, с запасом) — открытие
--- дашборда без ручных действий пользователя уже укладывается в лимит.
--- Если период раздвинуть до всей истории (2017+), нужно учитывать обрез.
+-- (когорты Реальта).
+-- ·
+-- Строка "ИТОГО" / столбцы "Итого <ГГ>" — НЕ настоящий серверный
+-- display:"pivot" (на native SQL он молча ломается, см. вики "Metabase
+-- pivot не работает на native SQL"), а вручную сконструированные
+-- дополнительные строки результата (UNION ALL), которые клиентский
+-- table.pivot просто раскладывает в нужные ячейки кросс-таба. Порядок
+-- строк/столбцов в table.pivot определяется порядком ПЕРВОГО появления
+-- значения в результате (не алфавитный) — гарантируется явным ORDER BY:
+-- строка ИТОГО идёт первой (охватывает все столбцы сразу, поэтому
+-- целиком задаёт порядок столбцов), дальше компании по алфавиту;
+-- внутри каждой строки — месяцы по toYYYYMM, с синтетическим ключом
+-- год*100+13 для "Итого <год>", который сортируется сразу после декабря
+-- этого года и перед январём следующего.
+-- ·
+-- ВАЖНО — лимит 2000 строк на native-запросы (не обходится LIMIT в SQL,
+-- см. вики-гочтю "Metabase native-запросы молча обрезаются до 2000
+-- строк"). У параметра "С месяца" дефолт 2025-01 — с ним этот запрос
+-- даёт 1195 строк (реальные + служебные строки итогов), с запасом.
 
+WITH filtered AS (
+    SELECT counterparty, month, amount
+    FROM realization_revenue
+    WHERE 1 = 1
+        [[ AND {{company}} ]]
+        [[ AND {{product}} ]]
+        [[ AND month >= {{start_month}} ]]
+        [[ AND month < {{end_month}} + INTERVAL 1 MONTH ]]
+),
+month_lbl AS (
+    SELECT
+        counterparty,
+        month,
+        concat(
+            multiIf(toMonth(month)=1,'Янв', toMonth(month)=2,'Фев', toMonth(month)=3,'Мар',
+                    toMonth(month)=4,'Апр', toMonth(month)=5,'Май', toMonth(month)=6,'Июн',
+                    toMonth(month)=7,'Июл', toMonth(month)=8,'Авг', toMonth(month)=9,'Сен',
+                    toMonth(month)=10,'Окт', toMonth(month)=11,'Ноя', 'Дек'),
+            '-', substring(toString(toYear(month)), 3, 2)
+        ) AS lbl,
+        amount
+    FROM filtered
+),
+base AS (
+    -- Компания x месяц (реальные данные)
+    SELECT counterparty AS company, 0 AS company_is_total, toYYYYMM(month) AS col_sort,
+           any(lbl) AS col_label, sum(amount) AS revenue
+    FROM month_lbl GROUP BY counterparty, month
+
+    UNION ALL
+
+    -- Компания x "Итого <год>" (субтотал по году для компании, справа от декабря)
+    SELECT counterparty AS company, 0 AS company_is_total, toYear(month)*100+13 AS col_sort,
+           concat('Итого ', substring(toString(toYear(month)), 3, 2)) AS col_label,
+           sum(amount) AS revenue
+    FROM month_lbl GROUP BY counterparty, toYear(month)
+
+    UNION ALL
+
+    -- "ИТОГО" x месяц (сумма по всем компаниям за месяц, строка сверху)
+    SELECT 'ИТОГО' AS company, 1 AS company_is_total, toYYYYMM(month) AS col_sort,
+           any(lbl) AS col_label, sum(amount) AS revenue
+    FROM month_lbl GROUP BY month
+
+    UNION ALL
+
+    -- "ИТОГО" x "Итого <год>" (сумма по всем компаниям за год)
+    SELECT 'ИТОГО' AS company, 1 AS company_is_total, toYear(month)*100+13 AS col_sort,
+           concat('Итого ', substring(toString(toYear(month)), 3, 2)) AS col_label,
+           sum(amount) AS revenue
+    FROM month_lbl GROUP BY toYear(month)
+)
 SELECT
-    counterparty AS "Компания",
-    month        AS "Месяц",
-    sum(amount)  AS "Выручка"
-FROM realization_revenue
-WHERE 1 = 1
-    AND ( {{company}} = '' OR counterparty = {{company}} )
-    AND ( {{product}} = '' OR nomenclature = {{product}} )
-    [[ AND month >= {{start_month}} ]]
-    [[ AND month < {{end_month}} + INTERVAL 1 MONTH ]]
-GROUP BY counterparty, month
-ORDER BY counterparty, month
+    company   AS "Компания",
+    col_label AS "Месяц",
+    revenue   AS "Выручка"
+FROM base
+ORDER BY company_is_total DESC, company, col_sort
