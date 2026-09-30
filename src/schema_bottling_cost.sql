@@ -179,3 +179,164 @@ SELECT
     round(debit_20 - credit_20, 2) AS diff
 FROM bottling.cost_entries
 GROUP BY month;
+
+-- =====================================================================
+-- СЕБЕСТОИМОСТЬ ПО ЗАКАЗУ (реализации клиенту) — ставкой месяца.
+--
+-- Строка реализации получает себестоимость = количество × ставка
+-- (₽/шт) номенклатурной группы за месяц отгрузки, где
+--     ставка = Дт 90.02.1 группы за месяц / проданное за месяц количество
+-- группы. Сумма себестоимостей заказов группы за месяц = проведённому в
+-- 90.02.1 (как в учёте). Это РАСПРЕДЕЛЕНИЕ по количеству, не фактическая
+-- себестоимость конкретной бутылки: внутри группы разные SKU получают
+-- одну ставку, а в 1С себестоимость «по заказу» не хранится (строки
+-- реализации проведены почти на нули).
+--
+-- Честные пробелы (не выдумываем, считаем отдельно):
+--   * себестоимость группы есть, продаж в месяце нет — она остаётся
+--     «не распределённой» (cost_rate_month.status);
+--   * у номенклатуры нет группы или в месяце нет себестоимости группы —
+--     строка получает cost = 0 и cost_status объясняет почему;
+--   * месяц не закрыт в 1С (котёл 20.01 не сходится) — ставка
+--     предварительная, month_closed = 0.
+-- =====================================================================
+
+-- Справочник «номенклатура → номенклатурная группа» (Catalog_Номенклатура,
+-- только позиции с заполненной группой; остальные в 1С без группы).
+CREATE TABLE IF NOT EXISTS bottling.nomenclature_group
+(
+    nomenclature_key    String,
+    nomenclature        String,
+    nomenclature_group  String,
+    loaded_at           DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(loaded_at)
+ORDER BY nomenclature_key;
+
+-- Строки реализации (проведённые) с номенклатурной группой.
+CREATE OR REPLACE VIEW bottling.cost_sales_lines AS
+SELECT
+    o.ref_key AS ref_key, o.number AS number, o.date AS date,
+    toStartOfMonth(o.date) AS month,
+    o.counterparty AS counterparty,
+    i.line_number AS line_number,
+    i.nomenclature_key AS nomenclature_key,
+    i.nomenclature AS nomenclature,
+    g.nomenclature_group AS nomenclature_group,
+    i.quantity AS quantity,
+    i.amount AS amount
+FROM (SELECT * FROM bottling.realization_orders FINAL WHERE posted = 1 AND deletion_mark = 0) AS o
+INNER JOIN (SELECT * FROM bottling.realization_items FINAL) AS i ON i.ref_key = o.ref_key
+LEFT JOIN (SELECT * FROM bottling.nomenclature_group FINAL) AS g ON g.nomenclature_key = i.nomenclature_key;
+
+-- Ставка месяца по группе.
+CREATE OR REPLACE VIEW bottling.cost_rate_month AS
+WITH
+    keys AS
+    (
+        SELECT month, nomenclature_group FROM
+        (
+            SELECT toStartOfMonth(period) AS month, dr_ext1 AS nomenclature_group
+            FROM bottling.cost_entries WHERE dr_account LIKE '90.02%'
+            UNION ALL
+            SELECT month, nomenclature_group FROM bottling.cost_sales_lines WHERE nomenclature_group != ''
+        )
+        GROUP BY month, nomenclature_group
+    ),
+    booked AS
+    (
+        SELECT toStartOfMonth(period) AS month, dr_ext1 AS nomenclature_group, sum(amount) AS cogs
+        FROM bottling.cost_entries WHERE dr_account LIKE '90.02%'
+        GROUP BY month, nomenclature_group
+    ),
+    sold AS
+    (
+        SELECT month, nomenclature_group, sum(quantity) AS qty_sold, sum(amount) AS revenue
+        FROM bottling.cost_sales_lines WHERE nomenclature_group != ''
+        GROUP BY month, nomenclature_group
+    )
+SELECT
+    k.month AS month,
+    k.nomenclature_group AS nomenclature_group,
+    coalesce(b.cogs, 0) AS cogs,
+    coalesce(s.qty_sold, 0) AS qty_sold,
+    coalesce(s.revenue, 0) AS revenue,
+    if(coalesce(s.qty_sold, 0) > 0, coalesce(b.cogs, 0) / s.qty_sold, 0) AS rate_per_unit,
+    multiIf(coalesce(s.qty_sold, 0) = 0 AND coalesce(b.cogs, 0) != 0, 'себестоимость без продаж (не распределена)',
+            coalesce(b.cogs, 0) = 0 AND coalesce(s.qty_sold, 0) > 0,  'продажи без себестоимости',
+                                                                       'ok') AS status,
+    if(abs(c.diff) < 1 AND c.credit_20 > 0, 1, 0) AS month_closed  -- нет строки в cost_account_20_check → credit_20 = 0 → не закрыт
+FROM keys AS k
+LEFT JOIN booked AS b ON b.month = k.month AND b.nomenclature_group = k.nomenclature_group
+LEFT JOIN sold   AS s ON s.month = k.month AND s.nomenclature_group = k.nomenclature_group
+LEFT JOIN bottling.cost_account_20_check AS c ON c.month = k.month;
+
+-- Пул месяца: себестоимость групп, у которых в месяце нет продаж
+-- (напр. «Готовая продукция» в июне 2026 — 17,6 млн проведены под общей
+-- группой, а продажи идут по конкретным; «Маркированная вода», «вода
+-- артезианская»). Привязать её к продажам по группе нельзя. Чтобы итог
+-- месяца совпал с учётом, пул РАСКЛАДЫВАЕТСЯ на строки реализации месяца
+-- пропорционально выручке — отдельной колонкой cost_pool, не смешивается
+-- со ставкой группы (cost). Это грубая оценка; если нужна только
+-- «чистая» себестоимость по группе — смотрите cost, а не cost_total.
+CREATE OR REPLACE VIEW bottling.cost_pool_month AS
+SELECT
+    r.month AS month,
+    sumIf(r.cogs, r.qty_sold = 0) AS pool_cost,
+    (SELECT sum(amount) FROM bottling.cost_sales_lines AS l WHERE l.month = r.month) AS month_revenue
+FROM bottling.cost_rate_month AS r
+GROUP BY r.month;
+
+-- Себестоимость и маржа по строке реализации (заказ клиенту).
+--   cost       — по ставке группы (количество × ₽/шт группы);
+--   cost_pool  — доля пула месяца (по выручке), см. cost_pool_month;
+--   cost_total = cost + cost_pool. Сумма cost_total за закрытый месяц =
+--                Дт 90.02.1 за месяц (кроме строк без группы/ставки).
+CREATE OR REPLACE VIEW bottling.cost_order_lines AS
+SELECT
+    l.ref_key AS ref_key, l.number AS number, l.date AS date, l.month AS month,
+    l.counterparty AS counterparty, l.line_number AS line_number,
+    l.nomenclature AS nomenclature, l.nomenclature_group AS nomenclature_group,
+    l.quantity AS quantity, l.amount AS revenue,
+    l.quantity * coalesce(r.rate_per_unit, 0) AS cost,
+    if(p.month_revenue != 0, p.pool_cost * l.amount / p.month_revenue, 0) AS cost_pool,
+    cost + cost_pool AS cost_total,
+    l.amount - cost AS margin,
+    l.amount - cost_total AS margin_total,
+    multiIf(l.nomenclature_group = '', 'нет номенклатурной группы',
+            r.status = 'ok', 'ok',
+            r.status = '', 'нет данных',  -- LEFT JOIN без совпадения даёт пустую строку, не NULL
+            r.status) AS cost_status,
+    coalesce(r.month_closed, 0) AS month_closed
+FROM bottling.cost_sales_lines AS l
+LEFT JOIN bottling.cost_rate_month AS r ON r.month = l.month AND r.nomenclature_group = l.nomenclature_group
+LEFT JOIN bottling.cost_pool_month AS p ON p.month = l.month;
+
+-- Та же себестоимость строки, разложенная на слои (Материалы / ОПР /
+-- Прочие прямые / Без разбивки — структура по cost_of_sales месяца) +
+-- слой 'Не привязана к группе (пул месяца)'.
+CREATE OR REPLACE VIEW bottling.cost_order_layers AS
+SELECT
+    l.ref_key AS ref_key, l.number AS number, l.date AS date, l.month AS month,
+    l.counterparty AS counterparty, l.nomenclature AS nomenclature,
+    l.nomenclature_group AS nomenclature_group,
+    c.layer AS layer,
+    l.quantity * c.layer_amount / r.qty_sold AS cost
+FROM bottling.cost_sales_lines AS l
+INNER JOIN bottling.cost_rate_month AS r
+    ON r.month = l.month AND r.nomenclature_group = l.nomenclature_group AND r.qty_sold > 0
+INNER JOIN
+(
+    SELECT month, nomenclature_group, layer, sum(amount) AS layer_amount
+    FROM bottling.cost_of_sales
+    GROUP BY month, nomenclature_group, layer
+) AS c ON c.month = l.month AND c.nomenclature_group = l.nomenclature_group
+
+UNION ALL
+
+SELECT
+    ref_key, number, date, month, counterparty, nomenclature, nomenclature_group,
+    'Не привязана к группе (пул месяца)' AS layer,
+    cost_pool AS cost
+FROM bottling.cost_order_lines
+WHERE cost_pool != 0;
