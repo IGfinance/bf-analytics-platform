@@ -26,7 +26,7 @@
    `schema_wb_metrics_views_sku.sql`).
 2. **Metabase 0.63.10 не умеет `display=pivot` на native SQL** — результат
    приходит искалеченным, а `/api/card/:id/query/pivot` отдаёт 404
-   (проверено 2026-09-24, см. `docs/vision.md`). На MBQL пивот работает.
+   (проверено 2026-09-24, см. `docs/product/vision.md`). На MBQL пивот работает.
 3. **Фильтр кабинета.** У native SQL на этом Metabase работает только
    привязка через переменную (`["variable", ["template-tag", ...]]`), а
    dimension-таргет молча перестаёт фильтровать — известная гочтя проекта.
