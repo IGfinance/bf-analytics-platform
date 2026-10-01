@@ -54,8 +54,9 @@ def test_doors_state_standard_first_and_classification():
     kinds = [d["kind"] for d in state]
     assert kinds == sorted(kinds, key=lambda k: 0 if k == doors.STANDARD else 1)
     by = {d["key"]: d for d in state}
-    assert by["wb_detail"]["kind"] == by["ozon_accruals"]["kind"] == by["bank_1c"]["kind"] == doors.STANDARD
-    assert by["card_pdf"]["kind"] == by["klientiks"]["kind"] == doors.CUSTOM
+    assert (by["wb_detail"]["kind"] == by["ozon_accruals"]["kind"] == by["bank_1c"]["kind"]
+            == by["card_pdf"]["kind"] == doors.STANDARD)
+    assert by["klientiks"]["kind"] == doors.CUSTOM
     assert all(d["active"] for d in state)
 
 
@@ -77,15 +78,16 @@ def test_upload_page_has_two_door_sections_with_right_cards(client):
     t = text(html)
     assert t.index("Стандартные двери") < t.index("Индивидуальные двери")
     std, cus = t.split("Индивидуальные двери")
-    for title in ("Детальный отчёт WB", "Сводный отчёт + сверка", "Начисления Ozon", "Банковская выписка 1С"):
+    for title in ("Детальный отчёт WB", "Сводный отчёт + сверка", "Начисления Ozon",
+                  "Банковская выписка 1С", "Карточная выписка PDF"):
         assert title in std and title not in cus
-    assert "Карточная выписка PDF" in cus and "Карточная выписка PDF" not in std
     assert "Выгрузка Клиентикс" not in t                    # не включена у CloudSix — чужая дверь не показывается
+    assert "У проекта пока нет индивидуальных дверей." in t  # у CloudSix индивидуальных нет
 
 
-def test_upload_page_project_without_custom_doors_says_so(client, monkeypatch):
-    monkeypatch.setitem(SOURCES, 1, ["bank_1c"])
-    assert "У проекта пока нет индивидуальных дверей." in text(page(client, "/p/cloudsix/upload"))
+def test_upload_page_project_with_custom_door_lists_it(client):
+    cus = text(page(client, "/p/realt/upload")).split("Индивидуальные двери")[-1]
+    assert "Выгрузка Клиентикс" in cus and "У проекта пока нет индивидуальных дверей." not in cus
 
 
 def test_cabinet_switcher_lists_cabinets_with_platform_badges_and_meta(client):
@@ -137,8 +139,8 @@ def test_projects_page_one_row_per_project_with_doors_split(client):
     assert "CloudSix" in cs and "Реальт" in realt
     # у CloudSix: стандартные до разделителя, индивидуальные после
     std, sep, cus = cs.partition('class="door-sep"')
-    assert sep and "Детальный отчёт WB" in std and "Банковская выписка 1С" in std
-    assert "Карточная выписка PDF" in cus and "Выгрузка Клиентикс" not in cus
+    assert sep and "Детальный отчёт WB" in std and "Банковская выписка 1С" in std and "Карточная выписка PDF" in std
+    assert "Выгрузка Клиентикс" not in cus and "нет индивидуальных дверей" in cus
     # у Реальта WB/Ozon не подключены — серые, но на месте; Клиентикс — индивидуальная
     r_std, _, r_cus = realt.partition('class="door-sep"')
     assert re.search(r"door-chip--off[^>]*>[^<]*Детальный отчёт WB", r_std)

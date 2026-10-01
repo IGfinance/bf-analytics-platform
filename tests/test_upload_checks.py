@@ -284,3 +284,25 @@ def test_result_page_shows_duplicates_and_checks():
         body = webapp.render_template("detail_result.html", error=None, summary=summary,
                                       logs=[], slug="cloudsix")
     assert "пропущено дублей: 3" in body and "Пропущено дублей: 3 из 5" in body
+
+
+# ---------------------------------------------- неактивная колонка «Удержание Агентского НДС»
+
+def test_agent_vat_column_is_optional_float_in_mapping_and_schema():
+    specs = core.load_column_specs(wb_core.MAPPING_PATH)
+    assert specs["agent_vat_withholding"] == {"type": "Float64", "optional": True}
+    a2c, _ = wb_core.load_mapping()
+    assert a2c["Удержание Агентского НДС"] == "agent_vat_withholding"
+    assert "agent_vat_withholding" in (Path(__file__).resolve().parent.parent / "src" / "schema_wb.sql").read_text(encoding="utf-8")
+
+
+def test_file_without_agent_vat_column_is_not_rejected_and_with_it_is_not_extra(tmp_path, client):
+    f = tmp_path / "Отчёт №555_1.xlsx"
+    _write_xlsx(f, wb_core, 0, drop=("agent_vat_withholding",))          # как 377 из 403 реальных файлов
+    assert wb_source.ingest([f], "Feel", log_fn=lambda *_: None, database="cloudsix")["rows"] == 3
+    g = tmp_path / "Отчёт №556_1.xlsx"
+    _write_xlsx(g, wb_core, 0)                                           # с колонкой
+    res = wb_source.ingest([g], "Feel", log_fn=lambda *_: None, database="cloudsix")
+    assert not any(r["name"] == "unmapped_columns" for r in res["outcomes"][0]["results"])
+    stored = [r for r in client.tables["wb_reports"][1] if r["report_number"] == 556][0]
+    assert stored["agent_vat_withholding"] == 10.5 and "Удержание Агентского НДС" not in stored["extra_columns"]

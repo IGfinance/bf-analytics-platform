@@ -2,9 +2,9 @@
 
 Дверь = отдельный блок на странице «Загрузка». Две категории:
   standard — стандартные (шаблонные, универсальные): формат файла одинаков у всех
-             проектов (отчёты площадок WB/Ozon, банковская выписка 1С);
+             проектов (отчёты площадок WB/Ozon, банковская выписка 1С, карточные PDF);
   custom   — индивидуальные: построены под конкретного клиента/источник
-             (карточные PDF, выгрузка Клиентикс).
+             (выгрузка Клиентикс).
 Отнесение к категории — единственное место: PLATFORM_DOORS (kind) и SOURCE_KINDS.
 Состояние для проекта (какие двери активны) считает doors_state(): чистая функция
 без обращений к БД и Flask, чтобы страницы «Загрузка» и «Проекты» не расходились.
@@ -50,7 +50,7 @@ SOURCE_META = {
 SUPPORTED_SOURCES = {key for key, meta in SOURCE_META.items() if "endpoint" in meta}
 
 # Категория источника; всё, чего здесь нет, — индивидуальная дверь.
-SOURCE_KINDS = {"bank_1c": STANDARD, "card_pdf": CUSTOM, "klientiks": CUSTOM}
+SOURCE_KINDS = {"bank_1c": STANDARD, "card_pdf": STANDARD, "klientiks": CUSTOM}
 
 
 def source_kind(key: str) -> str:
