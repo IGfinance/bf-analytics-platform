@@ -82,19 +82,54 @@ ALTER TABLE bottling.cost_entries COMMENT COLUMN amount 'Сумма провод
 --            'Прочие прямые'   — всё остальное в 20.01 (зарплата цеха,
 --                                амортизация и т.п. напрямую).
 -- ---------------------------------------------------------------------
+-- Папки номенклатуры: категория материала для «Подробной себестоимости»
+-- (этикетки / QR-коды / преформы / колпачки… — папки справочника
+-- Catalog_Номенклатура на втором уровне, глубже сворачиваются). Загрузчик —
+-- src/ingest_bottling_material_folders.py; правило категории и возможность
+-- задать свою группировку — там же (CATEGORY_OVERRIDES).
+CREATE TABLE IF NOT EXISTS bottling.material_folder
+(
+    nomenclature_key   String,
+    nomenclature       String,
+    folder_path        String,   -- полный путь по иерархии, напр. 'Сырье и материалы / QR-коды / qr-код упаковка'
+    material_category  String,   -- категория для раскрытия, напр. 'QR-коды'
+    loaded_at          DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(loaded_at)
+ORDER BY nomenclature_key;
+
 CREATE OR REPLACE VIEW bottling.cost_production AS
 SELECT
-    toStartOfMonth(period)  AS month,
-    dr_ext1                 AS nomenclature_group,
-    multiIf(cr_account = '10.01', 'Материалы',
-            cr_account = '25',    'ОПР',
-                                  'Прочие прямые') AS layer,
-    dr_ext2                 AS cost_item,
-    if(cr_account = '10.01', cr_ext1, '')          AS material,
-    sum(amount)             AS amount
-FROM bottling.cost_entries
-WHERE dr_account = '20.01'
-GROUP BY month, nomenclature_group, layer, cost_item, material;
+    e.month AS month,
+    e.nomenclature_group AS nomenclature_group,
+    e.layer AS layer,
+    e.cost_item AS cost_item,
+    e.material AS material,
+    if(e.layer = 'Материалы',
+       if(c.category != '', c.category, 'Без категории (нет в справочнике)'),
+       '') AS material_category,
+    sum(e.amount) AS amount
+FROM
+(
+    SELECT
+        toStartOfMonth(period) AS month,
+        dr_ext1 AS nomenclature_group,
+        multiIf(cr_account = '10.01', 'Материалы',
+                cr_account = '25',    'ОПР',
+                                      'Прочие прямые') AS layer,
+        dr_ext2 AS cost_item,
+        if(cr_account = '10.01', cr_ext1, '') AS material,
+        amount
+    FROM bottling.cost_entries
+    WHERE dr_account = '20.01'
+) AS e
+LEFT JOIN
+(
+    SELECT trimBoth(nomenclature) AS nomenclature, any(material_category) AS category
+    FROM bottling.material_folder FINAL
+    GROUP BY nomenclature
+) AS c ON c.nomenclature = trimBoth(e.material)
+GROUP BY month, nomenclature_group, layer, cost_item, material, material_category;
 
 -- ---------------------------------------------------------------------
 -- 2. Себестоимость продаж за месяц (ИТОГ = Дт 90.02.1, как в учёте),
@@ -121,7 +156,7 @@ WITH
     )
 SELECT
     b.month AS month, b.nomenclature_group AS nomenclature_group,
-    p.layer AS layer, p.cost_item AS cost_item, p.material AS material,
+    p.layer AS layer, p.cost_item AS cost_item, p.material AS material, p.material_category AS material_category,
     b.cogs * p.amount / t.total AS amount,
     'по структуре выпуска месяца' AS basis
 FROM booked AS b
@@ -132,7 +167,7 @@ UNION ALL
 
 SELECT
     b.month, b.nomenclature_group,
-    'Без разбивки' AS layer, '' AS cost_item, '' AS material,
+    'Без разбивки' AS layer, '' AS cost_item, '' AS material, '' AS material_category,
     b.cogs AS amount,
     'нет выпуска группы в месяце' AS basis
 FROM booked AS b
