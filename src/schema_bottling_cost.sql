@@ -443,3 +443,17 @@ SELECT
 FROM bottling.cost_returns_lines AS r
 ARRAY JOIN [('Возвраты', toUInt8(9), toFloat64(r.amount)),
             ('Маржа', toUInt8(8), toFloat64(-r.amount))] AS m;
+
+-- Источник карточки «Подробная себестоимость по категориям» (дашборд 18):
+-- строки раскрытия себестоимости (cost_of_sales) + строки выручки (чистая,
+-- без НДС, закрытые месяцы — cost_sales_lines) в одной «длинной» VIEW, чтобы
+-- общие фильтры Период/Группа работали и на выручку, и на затраты (field
+-- filter Metabase привязан к полям одной таблицы). is_revenue = 1 — выручка.
+CREATE OR REPLACE VIEW bottling.cost_breakdown_long AS
+SELECT month, nomenclature_group, layer, cost_item, material_category, amount, toUInt8(0) AS is_revenue
+FROM bottling.cost_of_sales
+UNION ALL
+SELECT month, nomenclature_group, 'Выручка' AS layer, '' AS cost_item, '' AS material_category,
+       sum(amount) AS amount, toUInt8(1) AS is_revenue
+FROM bottling.cost_sales_lines
+GROUP BY month, nomenclature_group;
