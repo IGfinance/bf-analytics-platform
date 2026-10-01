@@ -6,7 +6,7 @@
   <div class="flex flex-wrap items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold font-montserrat">{{ current_project.name if current_project else "Дашборд проекта" }}</h1>
-      <p class="text-sm text-secondary mt-1">Кабинетов в проекте: {{ cabinets|length }}</p>
+      <p class="text-sm text-secondary mt-1">Результаты проверок данных проекта</p>
     </div>
 
     {% if user_projects|length > 1 %}
@@ -25,33 +25,71 @@
     {% endif %}
   </div>
 
-  <div class="bg-surface border border-border rounded-2xl mt-6 overflow-hidden max-w-xl">
-    <div class="px-6 py-4 border-b border-border">
-      <h2 class="text-lg font-bold font-montserrat">Кабинеты</h2>
-    </div>
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead class="bg-surface text-secondary uppercase text-xs">
-          <tr><th class="px-4 py-3 text-left font-semibold">Кабинет</th></tr>
-        </thead>
-        <tbody>
-          {% for c in cabinets %}
-          <tr class="border-b border-border last:border-0 hover:bg-surface-hover transition-colors duration-150">
-            <td class="px-4 py-3">{{ c }}</td>
-          </tr>
+  {# Сводка по Тестам. Состояния: ok/empty/unavailable у отчёта; ok/warn/error/failed у теста.
+     Зелёного «по умолчанию» нет: нет проверок или Metabase недоступен — об этом сказано прямо. #}
+  <div class="bg-surface border border-border rounded-2xl mt-6 px-6 py-4 w-full">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        {% if report.overall == "ok" %}
+          <h2 class="text-lg font-bold font-montserrat text-success-text">Все проверки пройдены</h2>
+        {% elif report.overall == "warn" %}
+          <h2 class="text-lg font-bold font-montserrat text-warning">Есть замечания</h2>
+        {% elif report.overall == "error" or report.overall == "failed" %}
+          <h2 class="text-lg font-bold font-montserrat text-danger">Есть ошибки в данных или проверках</h2>
+        {% elif report.overall == "empty" %}
+          <h2 class="text-lg font-bold font-montserrat text-secondary">Проверок пока нет</h2>
+        {% else %}
+          <h2 class="text-lg font-bold font-montserrat text-danger">Проверки временно недоступны</h2>
+        {% endif %}
+        <p class="text-sm text-secondary mt-1">
+          {% if report.state == "ok" %}
+            Пройдено: {{ counts.ok }} · замечаний: {{ counts.warn }} · ошибок: {{ counts.error }}{% if counts.failed %} · не выполнено: {{ counts.failed }}{% endif %}
+            · обновлено {{ age_minutes }} мин назад
           {% else %}
-          <tr>
-            <td class="px-4 py-3 text-secondary">Кабинетов пока нет — добавьте их в project_cabinets.</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+            {{ report.message }}
+          {% endif %}
+        </p>
+        {% if report.stale %}
+          <p class="text-sm text-warning mt-1">{{ report.message }} (данные {{ age_minutes }} мин назад)</p>
+        {% endif %}
+      </div>
+      <a href="{{ url_for('project_dashboard', slug=current_project.slug, refresh=1) }}"
+         class="bg-accent text-white hover:bg-accent-hover rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150">Обновить</a>
     </div>
   </div>
 
-  <p class="text-xs text-secondary mt-8">
-    Дашборды Metabase (состояние сверки и данных), история загрузок и алерты
-    появятся здесь после интеграции с Metabase и миграций <code>uploads</code>/<code>alerts</code>
-    (см. текущие приоритеты в базе знаний проекта).
-  </p>
+  {% for r in report.results %}
+    <details class="bg-surface border border-border rounded-2xl mt-4 w-full" {% if r.status != "ok" %}open{% endif %}>
+      <summary class="px-6 py-4 flex flex-wrap items-center justify-between gap-2">
+        <span class="font-semibold">{{ r.name }}</span>
+        {% if r.status == "ok" %}<span class="text-sm text-success-text font-medium">Пройден</span>
+        {% elif r.status == "warn" %}<span class="text-sm text-warning font-medium">Замечание · строк: {{ r.rows_total }}</span>
+        {% elif r.status == "error" %}<span class="text-sm text-danger font-medium">Ошибка · строк: {{ r.rows_total }}</span>
+        {% else %}<span class="text-sm text-danger font-medium">Не выполнен</span>{% endif %}
+      </summary>
+      <div class="px-6 pb-4">
+        {% if r.description %}<p class="text-sm text-secondary">{{ r.description }}</p>{% endif %}
+        {% if r.message %}<p class="text-sm text-danger mt-2">{{ r.message }}</p>{% endif %}
+        {% if r.rows %}
+          <div class="overflow-x-auto mt-4">
+            <table class="w-full text-sm">
+              <thead class="bg-surface text-secondary uppercase text-xs">
+                <tr>{% for c in r.columns %}<th class="px-4 py-3 text-left font-semibold">{{ c }}</th>{% endfor %}</tr>
+              </thead>
+              <tbody>
+                {% for row in r.rows %}
+                  <tr class="border-b border-border last:border-0 hover:bg-surface-hover transition-colors duration-150">
+                    {% for cell in row %}<td class="px-4 py-3">{{ cell }}</td>{% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if r.rows_total > r.rows|length %}
+            <p class="text-xs text-secondary mt-2">Показано {{ r.rows|length }} из {{ r.rows_total }} строк.</p>
+          {% endif %}
+        {% endif %}
+      </div>
+    </details>
+  {% endfor %}
 {% endblock %}

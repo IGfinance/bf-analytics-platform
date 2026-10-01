@@ -34,6 +34,7 @@ import functools
 import logging
 import ntpath
 import os
+import time
 import posixpath
 import sys
 from pathlib import Path
@@ -53,6 +54,7 @@ load_dotenv(WEBAPP_DIR / ".env")       # секреты веб-формы (мо�
 from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
 from ozon_core import ingest_files as ingest_ozon      # noqa: E402
+import metabase_tests                                   # noqa: E402
 from upload_checks.core import UploadRejected, check_cabinet, has_errors  # noqa: E402
 from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
 from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
@@ -361,7 +363,10 @@ def home():
 @login_required
 @project_access_required
 def project_dashboard(slug):
-    return render_template("dashboard.html", cabinets=get_project_cabinets(g.project["id"], g.project["slug"]))
+    """Результаты «Тестов» из Metabase (ТЗ 04, блок B). ?refresh=1 — обойти кэш."""
+    report = metabase_tests.get_project_report(g.project, refresh=request.args.get("refresh") == "1")
+    age_minutes = max(0, int((time.time() - report.fetched_at) // 60)) if report.fetched_at else 0
+    return render_template("dashboard.html", report=report, counts=report.counts(), age_minutes=age_minutes)
 
 
 # ---------------------------------------------------------------------------
