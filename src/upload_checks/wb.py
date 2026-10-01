@@ -27,6 +27,26 @@ def existing_where(cabinet: str, rows: list) -> tuple:
             {"cabinet": cabinet, "rns": report_numbers})
 
 
+def pre_db(client, cabinet: str, parsed: dict) -> dict:
+    """Номер отчёта WB глобально уникален: если он уже загружен под ДРУГИМ кабинетом, почти
+    наверняка выбран не тот кабинет (данные осели бы не туда). Загрузка отклоняется."""
+    by_report = {int(rows[0]["report_number"]): fname for fname, rows in parsed.items() if rows}
+    if not by_report:
+        return {}
+    found = client.query(
+        "SELECT report_number, groupUniqArray(cabinet) FROM wb_reports FINAL "
+        "WHERE report_number IN {rns:Array(UInt64)} AND cabinet != {cabinet:String} GROUP BY report_number",
+        parameters={"rns": sorted(by_report), "cabinet": cabinet}).result_rows
+    results = {}
+    for rn, cabinets in found:
+        results[by_report[int(rn)]] = [CheckResult(
+            "report_in_other_cabinet", ERROR,
+            f"Отчёт № {rn} уже загружен в кабинет «{', '.join(sorted(cabinets))}», а вы выбрали «{cabinet}». "
+            "Проверьте кабинет. Файл не загружен.",
+            {"report_number": int(rn), "cabinets": sorted(cabinets)})]
+    return results
+
+
 def post_ingest(client, cabinet: str, parsed: dict) -> dict:
     """Сверка загруженных отчётов с недельной сводкой (если она уже загружена)."""
     from reconcile_wb import run_reconciliation   # поздний импорт: reconcile_wb тянет wb_core
@@ -64,7 +84,7 @@ def make_spec() -> SourceSpec:
         key_columns=["cabinet", "report_number"], unmapped_table="wb_unmapped_columns_log",
         fp_exclude=frozenset({"row_num"}),
         scope_of=lambda row: int(row["report_number"]), scope_col="report_number",
-        existing_where=existing_where, pre_file=pre_file, post_ingest=post_ingest,
+        existing_where=existing_where, pre_file=pre_file, pre_db=pre_db, post_ingest=post_ingest,
     )
 
 

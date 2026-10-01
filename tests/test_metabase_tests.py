@@ -135,7 +135,9 @@ def test_cache_avoids_repeated_calls_and_refresh_bypasses():
     c, sess = make([(1, "Тест")], {1: card_result(["x"], [])})
     c.get_report(["CloudSix"]); n = len(sess.calls)
     c.get_report(["CloudSix"]); assert len(sess.calls) == n
-    c.get_report(["CloudSix"], refresh=True); assert len(sess.calls) > n
+    c.get_report(["CloudSix"], refresh=True); assert len(sess.calls) == n          # моложе 30 с — троттлинг, кэш
+    c._cache[next(iter(c._cache))].fetched_at -= mt.REFRESH_MIN_INTERVAL_S + 1
+    c.get_report(["CloudSix"], refresh=True); assert len(sess.calls) > n           # состарился — обновили
 
 
 def test_rows_capped_and_total_reported():
