@@ -16,6 +16,7 @@ import time
 from datetime import datetime, date
 
 import clickhouse_connect
+import ch_connect
 import requests
 
 from cabinet_credentials import get_ozon_credentials
@@ -102,10 +103,10 @@ def get_client():
     host = os.environ["CLICKHOUSE_HOST"]
     port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
     user = os.environ.get("CLICKHOUSE_USER", "default")
-    password = os.environ["CLICKHOUSE_PASSWORD"]
+    password = os.environ.get("CLICKHOUSE_PASSWORD", "")
     database = os.environ.get("CLICKHOUSE_DATABASE", "default")
     secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
-    return clickhouse_connect.get_client(
+    return ch_connect.get_client(
         host=host, port=port, username=user, password=password,
         database=database, secure=secure,
     )

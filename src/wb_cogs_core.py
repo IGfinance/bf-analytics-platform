@@ -22,6 +22,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import clickhouse_connect
+import ch_connect
 import openpyxl
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,10 @@ def get_client():
     host = os.environ["CLICKHOUSE_HOST"]
     port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
     user = os.environ.get("CLICKHOUSE_USER", "default")
-    password = os.environ["CLICKHOUSE_PASSWORD"]
+    password = os.environ.get("CLICKHOUSE_PASSWORD", "")
     database = os.environ.get("CLICKHOUSE_DATABASE", "default")
     secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
-    return clickhouse_connect.get_client(
+    return ch_connect.get_client(
         host=host, port=port, username=user, password=password,
         database=database, secure=secure,
     )

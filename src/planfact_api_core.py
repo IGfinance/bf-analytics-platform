@@ -14,6 +14,7 @@ import time
 from datetime import date, datetime, timezone
 
 import clickhouse_connect
+import ch_connect
 import requests
 
 BASE_URL = "https://api.planfact.io/api/v1/operations"
@@ -30,11 +31,11 @@ COLUMNS = [
 
 
 def get_client():
-    return clickhouse_connect.get_client(
+    return ch_connect.get_client(
         host=os.environ["CLICKHOUSE_HOST"],
         port=int(os.environ.get("CLICKHOUSE_PORT", "8443")),
         username=os.environ.get("CLICKHOUSE_USER", "default"),
-        password=os.environ["CLICKHOUSE_PASSWORD"],
+        password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
         database=os.environ.get("CLICKHOUSE_DATABASE", "default"),
         secure=os.environ.get("CLICKHOUSE_SECURE", "1") != "0",
     )

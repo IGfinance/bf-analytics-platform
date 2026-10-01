@@ -48,8 +48,21 @@ ROOT_DIR = WEBAPP_DIR.parent
 SRC_DIR = ROOT_DIR / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-load_dotenv(ROOT_DIR / ".env")   # реквизиты ClickHouse
-load_dotenv(WEBAPP_DIR / ".env")       # секреты веб-формы (может переопределить)
+def _load_env(path: Path) -> None:
+    """load_dotenv, который не падает, если файл недоступен этому пользователю.
+
+    На проде сервис работает от www-data и читает ТОЛЬКО webapp/.env (ключи проектов ClickHouse,
+    секрет Flask, Metabase); общий корневой .env — root-only (там пароль админа ClickHouse, ключи
+    площадок, реквизиты SSH) и сервису недоступен. Первым грузится webapp/.env: python-dotenv
+    не перезаписывает уже заданные переменные, поэтому его значения главнее корневого."""
+    try:
+        load_dotenv(path)
+    except OSError:
+        pass
+
+
+_load_env(WEBAPP_DIR / ".env")   # прод: всё, что нужно сервису (см. ТЗ 04, блок D)
+_load_env(ROOT_DIR / ".env")     # локальная разработка: общий .env репозитория
 
 from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
