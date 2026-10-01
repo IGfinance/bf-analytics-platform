@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS wb_reports
     buyer_inn                                Nullable(String),
     social_certificate_payment               Nullable(Float64),
     agent_vat_withholding                    Nullable(Float64),  -- «Удержание Агентского НДС»: неактивная, в метриках не используется
+    logistics_coefficient                    Nullable(Float64),  -- «Коэффициент логистики»: неактивная, в метриках не используется
     extra_columns  Map(String, String),  -- значения колонок, которых нет в маппинге
     source_file    String,
     loaded_at      DateTime DEFAULT now()
@@ -119,3 +120,9 @@ ORDER BY (seen_at);
 --   ALTER TABLE wb_reports UPDATE agent_vat_withholding = toFloat64OrNull(extra_columns['Удержание Агентского НДС']),
 --       extra_columns = mapFilter((k, v) -> k != 'Удержание Агентского НДС', extra_columns)
 --   WHERE mapContains(extra_columns, 'Удержание Агентского НДС');
+
+-- Миграция 2026-10-02 (боевая БД), по той же схеме для logistics_coefficient:
+--   ALTER TABLE wb_reports ADD COLUMN IF NOT EXISTS logistics_coefficient Nullable(Float64);
+--   ALTER TABLE wb_reports UPDATE logistics_coefficient = toFloat64OrNull(extra_columns['Коэффициент логистики']),
+--       extra_columns = mapFilter((k, v) -> k != 'Коэффициент логистики', extra_columns)
+--   WHERE mapContains(extra_columns, 'Коэффициент логистики');

@@ -306,3 +306,14 @@ def test_file_without_agent_vat_column_is_not_rejected_and_with_it_is_not_extra(
     assert not any(r["name"] == "unmapped_columns" for r in res["outcomes"][0]["results"])
     stored = [r for r in client.tables["wb_reports"][1] if r["report_number"] == 556][0]
     assert stored["agent_vat_withholding"] == 10.5 and "Удержание Агентского НДС" not in stored["extra_columns"]
+
+
+def test_logistics_coefficient_column_is_optional_float_and_not_extra(tmp_path, client):
+    specs = core.load_column_specs(wb_core.MAPPING_PATH)
+    assert specs["logistics_coefficient"] == {"type": "Float64", "optional": True}
+    f = tmp_path / "Отчёт №777_1.xlsx"
+    _write_xlsx(f, wb_core, 0)
+    res = wb_source.ingest([f], "Feel", log_fn=lambda *_: None, database="cloudsix")
+    assert not any(r["name"] == "unmapped_columns" for r in res["outcomes"][0]["results"])
+    stored = client.tables["wb_reports"][1][0]
+    assert stored["logistics_coefficient"] == 10.5 and "Коэффициент логистики" not in stored["extra_columns"]
