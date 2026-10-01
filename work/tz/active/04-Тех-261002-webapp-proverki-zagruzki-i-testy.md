@@ -110,3 +110,4 @@ tests/test_upload_checks.py  tests/test_dedup.py  tests/test_metabase_tests.py  
 ## Changelog
 - 261002: создано
 - 261002: блок A выполнен и выкачен на прод; добавлены экстра-столбцы в блок B
+- 261002: блоки B, C, D выкачены на прод (ключи ClickHouse: src/ch_connect.py, docs/clickhouse-access.md); открыто — приёмка
