@@ -109,3 +109,6 @@ columns:
   wholesale_business_discount_pct: { type: Float64,  aliases: ["Оптовая скидка для бизнеса, %"] }
   buyer_inn:                       { type: String, optional: true,   aliases: ["ИНН покупателя-юрлица или ИП"] }
   social_certificate_payment:      { type: Float64, optional: true,  aliases: ["Оплата социальным сертификатом"] }
+  # Неактивная колонка (решение владельца 2026-10-02): хранится в таблице, в метриках/вьюхах НЕ
+  # используется. Есть не во всех файлах (26 из 403 у CloudSix) — отсутствие не ошибка.
+  agent_vat_withholding:           { type: Float64, optional: true,  aliases: ["Удержание Агентского НДС"] }

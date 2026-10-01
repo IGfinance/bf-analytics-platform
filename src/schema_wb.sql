@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS wb_reports
     wholesale_business_discount_pct          Nullable(Float64),
     buyer_inn                                Nullable(String),
     social_certificate_payment               Nullable(Float64),
+    agent_vat_withholding                    Nullable(Float64),  -- «Удержание Агентского НДС»: неактивная, в метриках не используется
     extra_columns  Map(String, String),  -- значения колонок, которых нет в маппинге
     source_file    String,
     loaded_at      DateTime DEFAULT now()
@@ -111,3 +112,10 @@ CREATE TABLE IF NOT EXISTS wb_unmapped_columns_log
 )
 ENGINE = MergeTree
 ORDER BY (seen_at);
+
+-- Миграция 2026-10-02 (боевая БД): колонка agent_vat_withholding добавлена в wb_reports, значения
+-- перенесены из extra_columns уже загруженных строк:
+--   ALTER TABLE wb_reports ADD COLUMN IF NOT EXISTS agent_vat_withholding Nullable(Float64);
+--   ALTER TABLE wb_reports UPDATE agent_vat_withholding = toFloat64OrNull(extra_columns['Удержание Агентского НДС']),
+--       extra_columns = mapFilter((k, v) -> k != 'Удержание Агентского НДС', extra_columns)
+--   WHERE mapContains(extra_columns, 'Удержание Агентского НДС');
