@@ -27,9 +27,18 @@ ClickHouse реально слушает (прод-VPS или открытый �
 Запуск:
     python3 src/ingest_bottling_realization.py
     python3 src/ingest_bottling_realization.py --dry-run   # без записи в CH
+
+ИНКРЕМЕНТАЛЬНО (быстро, для ежемесячного обновления себестоимости):
+    python3 src/ingest_bottling_realization.py --since 2026-08-01 --dump-json out.json
+тянет только документы с Date >= since (и их строки по ref_key, пачками). В
+режиме --since перед вставкой нужно удалить из таблиц старые строки этих ref_key
+(повторное проведение документа в 1С меняет/убирает строки, ReplacingMergeTree
+по (ref_key, line_number) «осиротевшие» строки не уберёт) — при прямой записи
+это делает сам скрипт, при --dump-json список ref_key лежит в поле "ref_keys".
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -139,6 +148,8 @@ ITEMS_COLUMNS = [
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry-run', action='store_true', help='не писать в ClickHouse, только посчитать')
+    ap.add_argument('--since', help='YYYY-MM-DD: только документы с Date >= since (инкрементально)')
+    ap.add_argument('--dump-json', help='сохранить строки в JSON (для загрузки в обход туннеля)')
     args = ap.parse_args()
 
     print('Читаю $metadata...')
@@ -152,12 +163,21 @@ def main():
     if missing:
         raise RuntimeError(f'Полей нет в $metadata (проверьте 1С не переименовал их): {missing}')
 
+    flt = f"Date ge datetime'{args.since}T00:00:00'" if args.since else None
     print('Тяну заголовки "Реализация товаров и услуг"...')
-    header_rows = fetch_all_wide(ENTITY, fields, key, page=5000)
+    header_rows = fetch_all_wide(ENTITY, fields, key, page=5000, flt=flt)
     print(f'  {len(header_rows)} документов')
 
     print('Тяну строки товаров...')
-    line_rows = fetch_all(f'{ENTITY}_Товары', select=','.join(LINE_FIELDS), page=5000)
+    if args.since:
+        # у строк нет даты — тянем по ref_key шапок пачками (длина URL ограничена IIS)
+        refs = [h['Ref_Key'] for h in header_rows]
+        line_rows = []
+        for i in range(0, len(refs), 10):
+            f = ' or '.join(f"Ref_Key eq guid'{r}'" for r in refs[i:i + 10])
+            line_rows += fetch_all(f'{ENTITY}_Товары', select=','.join(LINE_FIELDS), page=5000, flt=f)
+    else:
+        line_rows = fetch_all(f'{ENTITY}_Товары', select=','.join(LINE_FIELDS), page=5000)
     print(f'  {len(line_rows)} строк товаров')
 
     orders_rows = build_orders_rows(header_rows, guid_map)
@@ -166,11 +186,23 @@ def main():
     n_posted = sum(1 for r in orders_rows if r[ORDERS_COLUMNS.index('posted')] == 1)
     print(f'  из них проведено: {n_posted} ({round(100 * n_posted / max(len(orders_rows), 1), 1)}%)')
 
-    if args.dry_run:
-        print('--dry-run: в ClickHouse не пишу.')
+    if args.dump_json:
+        Path(args.dump_json).write_text(json.dumps({
+            'orders_columns': ORDERS_COLUMNS, 'orders': orders_rows,
+            'items_columns': ITEMS_COLUMNS, 'items': items_rows,
+            'ref_keys': [h['Ref_Key'] for h in header_rows] if args.since else None,
+        }, ensure_ascii=False, default=str), encoding='utf-8')
+        print(f'Сохранено в {args.dump_json}')
+
+    if args.dry_run or args.dump_json:
+        print('Не пишу в ClickHouse (--dry-run / --dump-json).')
         return
 
     client = get_client(database='bottling')
+    if args.since:
+        keys = ','.join("'" + h['Ref_Key'] + "'" for h in header_rows)
+        for t in ('realization_orders', 'realization_items'):
+            client.command(f'ALTER TABLE {t} DELETE WHERE ref_key IN ({keys}) SETTINGS mutations_sync = 1')
     print('Пишу bottling.realization_orders...')
     client.insert('realization_orders', orders_rows, column_names=ORDERS_COLUMNS)
     print('Пишу bottling.realization_items...')

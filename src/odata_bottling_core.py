@@ -53,13 +53,18 @@ def odata_get_json(path: str) -> dict:
     return json.loads(body)
 
 
-def fetch_all(entity: str, select: str | None = None, page: int = 5000) -> list[dict]:
+def fetch_all(entity: str, select: str | None = None, page: int = 5000, flt: str | None = None) -> list[dict]:
+    """flt — OData $filter (напр. "Date ge datetime'2026-09-01T00:00:00'"). Без стабильной
+    сортировки $skip на больших объектах может терять строки — для фильтра добавляется
+    $orderby=Ref_Key (гочтя Catalog_Номенклатура: без него 5000 из 5244)."""
     rows: list[dict] = []
     skip = 0
     while True:
         q = f"{entity}?$format=json&$top={page}&$skip={skip}"
         if select:
             q += f"&$select={select}"
+        if flt:
+            q += f"&$filter={flt}&$orderby=Ref_Key"
         d = odata_get_json(q)
         batch = d['value']
         rows.extend(batch)
@@ -132,17 +137,17 @@ def chunk_select_fields(fields: list[str], key: str, max_encoded: int = 1500) ->
     return chunks
 
 
-def fetch_all_wide(entity: str, fields: list[str], key: str, page: int = 5000) -> list[dict]:
+def fetch_all_wide(entity: str, fields: list[str], key: str, page: int = 5000, flt: str | None = None) -> list[dict]:
     """Как fetch_all, но для широких объектов: тянет поля отдельными
     пачками (см. chunk_select_fields) и склеивает построчно по `key`.
     """
     chunks = chunk_select_fields(fields, key)
     if len(chunks) == 1:
-        return fetch_all(entity, select=','.join(chunks[0]), page=page)
+        return fetch_all(entity, select=','.join(chunks[0]), page=page, flt=flt)
     merged: dict[str, dict] = {}
     order: list[str] = []
     for i, chunk in enumerate(chunks):
-        rows = fetch_all(entity, select=','.join(chunk), page=page)
+        rows = fetch_all(entity, select=','.join(chunk), page=page, flt=flt)
         for r in rows:
             k = r.get(key)
             if k not in merged:
