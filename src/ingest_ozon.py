@@ -18,7 +18,7 @@ import glob
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 from upload_checks.core import UploadRejected
 from ozon_core import ingest_files, load_mapping, process_file, SCRIPT_DIR

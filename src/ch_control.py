@@ -12,6 +12,7 @@ schema_control.sql и .claude/plans/iridescent-brewing-scroll.md.
 import os
 
 import clickhouse_connect
+import ch_connect
 
 CONTROL_DATABASE = "control"
 
@@ -20,9 +21,9 @@ def get_control_client():
     host = os.environ["CLICKHOUSE_HOST"]
     port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
     user = os.environ.get("CLICKHOUSE_USER", "default")
-    password = os.environ["CLICKHOUSE_PASSWORD"]
+    password = os.environ.get("CLICKHOUSE_PASSWORD", "")
     secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
-    return clickhouse_connect.get_client(
+    return ch_connect.get_client(
         host=host, port=port, username=user, password=password,
         database=CONTROL_DATABASE, secure=secure,
     )

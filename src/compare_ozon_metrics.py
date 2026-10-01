@@ -20,7 +20,7 @@ sales_amount/spp_amount по отдельности и sales_qty не сверя
 import argparse
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 SCRIPT_DIR = Path(__file__).parent
 load_dotenv(SCRIPT_DIR.parent / ".env")

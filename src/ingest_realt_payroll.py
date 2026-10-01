@@ -13,7 +13,7 @@ import argparse
 import os
 import sys
 
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 from realt_gsheets_core import (
     SCRIPT_DIR, PAYROLL_SHEET_NAME, read_tab, parse_payroll, ingest_payroll,
