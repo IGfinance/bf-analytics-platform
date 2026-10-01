@@ -4,16 +4,31 @@
 
 {% block content %}
   <h1 class="text-2xl font-bold font-montserrat">Проекты</h1>
+  <p class="text-sm text-secondary mt-1">Доступные вам проекты и двери — точки загрузки данных. Слева стандартные, справа от разделителя индивидуальные.</p>
 
-  {% if projects %}
-    <div class="grid gap-4 mt-6 sm:grid-cols-2 lg:grid-cols-3">
-      {% for p in projects %}
-        <a href="{{ url_for('project_dashboard', slug=p.slug) }}"
-           class="bg-surface border border-border rounded-2xl p-6 hover:border-border-hover transition-colors duration-150">
-          <h2 class="text-lg font-bold font-montserrat">{{ p.name }}</h2>
-        </a>
-      {% endfor %}
-    </div>
+  {% if rows %}
+    {% for row in rows %}
+      <div class="project-row">
+        <a class="project-row__name" href="{{ url_for('project_dashboard', slug=row.project.slug) }}">{{ row.project.name }}</a>
+        <div class="project-row__doors">
+          <div class="door-group">
+          {% for d in row.standard %}
+            <a class="door-chip {% if not d.active %}door-chip--off{% endif %}"
+               href="{{ url_for('upload_page', slug=row.project.slug) }}"
+               {% if not d.active %}title="У проекта эта дверь не подключена"{% endif %}>{{ d.label }}</a>
+          {% endfor %}
+          </div>
+          <span class="door-sep" aria-hidden="true"></span>
+          <div class="door-group">
+          {% for d in row.custom %}
+            <a class="door-chip door-chip--custom" href="{{ url_for('upload_page', slug=row.project.slug) }}">{{ d.label }}</a>
+          {% else %}
+            <span class="door-none">нет индивидуальных дверей</span>
+          {% endfor %}
+          </div>
+        </div>
+      </div>
+    {% endfor %}
   {% else %}
     <p class="text-sm text-secondary mt-4">
       Вам пока не выдан доступ ни к одному проекту. Обратитесь к администратору.

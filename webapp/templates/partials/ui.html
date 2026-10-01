@@ -1,0 +1,32 @@
+{# Макросы интерфейса. ui_select — выпадающий список в стиле приложения (вместо нативного
+   <select>): кнопка + список опций, клавиатура (Enter/Space/стрелки/Esc), закрытие по клику
+   снаружи. Поведение — webapp/static/shell.js (data-ui-select), стили — static/ui.css.
+
+   options — список dict: value, label; необязательно: href (опция-ссылка: выбор уводит на
+   страницу — переключатель проекта), badge (серая подпись справа), meta (произвольная
+   строка для JS, напр. площадки кабинета). selected — value выбранной опции.
+   name — если задан, в форму уходит скрытое поле с выбранным value. attrs — доп. атрибуты
+   на контейнер (напр. data-cabinet-select). disabled — серый и некликабельный. #}
+{% macro ui_select(id, label, options, selected=None, name=None, disabled=False, placeholder="Выберите…", attrs="") %}
+  {% set current = options | selectattr("value", "equalto", selected) | list | first %}
+  <div class="ui-select" data-ui-select {{ attrs | safe }}>
+    <span class="ui-select__label" id="{{ id }}-label">{{ label }}</span>
+    <div class="ui-select__control">
+      <button type="button" class="ui-select__button" id="{{ id }}" aria-haspopup="listbox" aria-expanded="false"
+              aria-labelledby="{{ id }}-label {{ id }}" {% if disabled %}disabled{% endif %}>
+        <span data-ui-select-value class="{% if not current %}ui-select__value--placeholder{% endif %}">{{ current.label if current else placeholder }}</span>
+        <svg class="ui-select__chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8l5 5 5-5"/></svg>
+      </button>
+      {% if name %}<input type="hidden" name="{{ name }}" value="{{ selected or '' }}" data-ui-select-input>{% endif %}
+      <ul class="ui-select__list" role="listbox" aria-labelledby="{{ id }}-label" hidden>
+        {% for o in options %}
+          <li class="ui-select__option" role="option" tabindex="-1" data-value="{{ o.value }}"
+              {% if o.href %}data-href="{{ o.href }}"{% endif %} {% if o.meta is defined and o.meta %}data-meta="{{ o.meta }}"{% endif %}
+              aria-selected="{{ 'true' if o.value == selected else 'false' }}">
+            <span>{{ o.label }}</span>{% if o.badge %}<span class="ui-select__badge">{{ o.badge }}</span>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+{% endmacro %}

@@ -160,7 +160,8 @@ def _render(report):
         webapp.g.project = {"id": 1, "slug": "cloudsix", "name": "CloudSix"}
         from flask import render_template
         return render_template("dashboard.html", report=report, counts=report.counts(), age_minutes=3,
-                               current_project={"slug": "cloudsix", "name": "CloudSix"}, user_projects=[])
+                               current_project={"slug": "cloudsix", "name": "CloudSix"}, user_projects=[],
+                               project_options=lambda endpoint: [])
 
 
 def test_page_states_never_green_by_default():

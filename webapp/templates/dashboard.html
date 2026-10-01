@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/ui.html" import ui_select %}
 
 {% block title %}Дашборд{% endblock %}
 
@@ -9,20 +10,9 @@
       <p class="text-sm text-secondary mt-1">Результаты проверок данных проекта</p>
     </div>
 
-    {% if user_projects|length > 1 %}
-      <div class="flex items-center gap-2">
-        <label for="dashboard-project-select" class="text-sm font-semibold text-secondary">Проект</label>
-        <select id="dashboard-project-select" data-project-select
-                class="bg-page border border-border focus:border-accent focus:outline-none rounded-lg px-3 py-2 text-sm">
-          {% for p in user_projects %}
-            <option value="{{ url_for('project_dashboard', slug=p.slug) }}"
-                    {% if current_project and current_project.slug == p.slug %}selected{% endif %}>
-              {{ p.name }}
-            </option>
-          {% endfor %}
-        </select>
-      </div>
-    {% endif %}
+    {{ ui_select("dashboard-project", "Проект", project_options("project_dashboard"),
+                 selected=current_project.slug if current_project else None,
+                 disabled=user_projects|length <= 1) }}
   </div>
 
   {# Сводка по Тестам. Состояния: ok/empty/unavailable у отчёта; ok/warn/error/failed у теста.
@@ -60,8 +50,8 @@
 
   {% for r in report.results %}
     <details class="bg-surface border border-border rounded-2xl mt-4 w-full" {% if r.status != "ok" %}open{% endif %}>
-      <summary class="px-6 py-4 flex flex-wrap items-center justify-between gap-2">
-        <span class="font-semibold">{{ r.name }}</span>
+      <summary class="test-summary">
+        <span class="test-summary__title">{{ r.name }}</span>
         {% if r.status == "ok" %}<span class="text-sm text-success-text font-medium">Пройден</span>
         {% elif r.status == "warn" %}<span class="text-sm text-warning font-medium">Замечание · строк: {{ r.rows_total }}</span>
         {% elif r.status == "error" %}<span class="text-sm text-danger font-medium">Ошибка · строк: {{ r.rows_total }}</span>

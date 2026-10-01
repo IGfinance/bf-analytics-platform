@@ -55,6 +55,9 @@ from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
 from ozon_core import ingest_files as ingest_ozon      # noqa: E402
 import metabase_tests                                   # noqa: E402
+import doors                                            # noqa: E402
+from doors import (ALL_PLATFORMS, SUPPORTED_PLATFORMS, SOURCE_META,  # noqa: E402
+                   SUPPORTED_SOURCES, STANDARD, CUSTOM)
 from upload_checks.core import UploadRejected, check_cabinet, has_errors  # noqa: E402
 from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
 from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
@@ -96,6 +99,16 @@ class PrefixMiddleware:
 URL_PREFIX = os.environ.get("URL_PREFIX", "")
 if URL_PREFIX:
     app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix=URL_PREFIX)
+
+def asset_v(filename: str) -> int:
+    """Версия статики для ?v= — время изменения файла (браузер не держит старый shell.js/ui.css)."""
+    try:
+        return int((WEBAPP_DIR / "static" / filename).stat().st_mtime)
+    except OSError:
+        return 0
+
+
+app.jinja_env.globals["asset_v"] = asset_v
 
 UPLOAD_DIR = WEBAPP_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -183,6 +196,22 @@ def get_project_cabinets(project_id: int, database: str, platform: str | None = 
     except Exception:
         log.exception("Не удалось получить кабинеты проекта id=%s", project_id)
         return []
+
+
+def get_project_cabinet_platforms(project_id: int, database: str) -> dict:
+    """{кабинет: [площадки]} — для переключателя кабинетов на «Загрузке»: кабинет WB-only
+    не должен включать двери Ozon. При ошибке — {}."""
+    try:
+        client = get_client(database=database)
+        rows = client.query(
+            "SELECT cabinet, groupUniqArray(platform) FROM project_cabinets FINAL "
+            "WHERE project_id = {pid:UInt32} GROUP BY cabinet ORDER BY cabinet",
+            parameters={"pid": int(project_id)},
+        ).result_rows
+        return {r[0]: sorted(r[1]) for r in rows}
+    except Exception:
+        log.exception("Не удалось получить кабинеты с площадками проекта id=%s", project_id)
+        return {}
 
 
 def get_project_platforms(project_id: int, database: str) -> list[str]:
@@ -300,16 +329,21 @@ def build_top_nav() -> list[dict]:
 def inject_shell_context():
     """Общие данные шапки для всех шаблонов после логина.
 
-    unread_alerts — заглушка до миграции alerts.
     """
     if not current_user.is_authenticated:
         return {}
     project = g.get("project")
+
+    def project_options(endpoint: str) -> list:
+        """Опции переключателя проекта: каждая ведёт на тот же раздел другого проекта."""
+        return [{"value": p["slug"], "label": p["name"], "href": url_for(endpoint, slug=p["slug"])}
+                for p in get_user_projects(int(current_user.id))]
+
     return {
+        "project_options": project_options,
         "top_nav_items": build_top_nav(),
         "user_projects": get_user_projects(int(current_user.id)),
         "current_project": project,
-        "unread_alerts": 0,
     }
 
 
@@ -352,7 +386,16 @@ def logout():
 @app.route("/", methods=["GET"])
 @login_required
 def home():
-    return render_template("home.html", projects=get_user_projects(int(current_user.id)))
+    rows = []
+    for p in get_user_projects(int(current_user.id)):
+        state = doors.doors_state(get_project_platforms(p["id"], p["slug"]),
+                                  get_project_sources(p["id"], p["slug"]))
+        rows.append({
+            "project": p,
+            "standard": [d for d in state if d["kind"] == STANDARD],
+            "custom": [d for d in state if d["kind"] == CUSTOM and d["active"]],
+        })
+    return render_template("home.html", rows=rows)
 
 
 # ---------------------------------------------------------------------------
@@ -373,36 +416,7 @@ def project_dashboard(slug):
 # Routes — загрузка отчётов
 # ---------------------------------------------------------------------------
 
-# Все известные платформе площадки (каталог для UI) — независимо от того,
-# есть ли у конкретного проекта кабинеты на этой площадке. Площадка без
-# адаптера рендерится на /p/<slug>/upload как серая заглушка ВСЕГДА, а не
-# только когда у проекта уже случайно есть такие кабинеты — так на странице
-# загрузки одинаковый набор карточек у всех проектов.
-ALL_PLATFORMS = {
-    "wb": "Wildberries",
-    "ozon": "Ozon",
-}
-
-# Площадки, для которых уже есть ingest-адаптер и формы загрузки. Остальные
-# из ALL_PLATFORMS рендерятся как disabled-заглушка на /p/<slug>/upload.
-SUPPORTED_PLATFORMS = {"wb", "ozon"}
-
-# Источники (project_sources), которые код умеет парсить и грузить. Источник,
-# включённый у проекта, но не отсюда, рендерится как disabled-заглушка
-# (аналог other_platforms). SOURCE_META — метаданные для UI и роутинга;
-# supported = наличие endpoint (совпадает с SUPPORTED_SOURCES).
-SOURCE_META = {
-    "bank_1c": {"label": "Банковская выписка 1С", "accept": ".txt",
-                "endpoint": "upload_bank", "description":
-                "Файлы выписок 1С (txt) — данные сохранятся в bank_statements."},
-    "card_pdf": {"label": "Карточная выписка PDF", "accept": ".pdf",
-                 "endpoint": "upload_card", "description":
-                 "PDF-справки о движении средств по картам — данные сохранятся в card_statements."},
-    "klientiks": {"label": "Выгрузка Клиентикс", "accept": ".csv",
-                  "endpoint": "upload_klientiks", "description":
-                  "CSV-выгрузка визитов из Клиентикс — данные сохранятся в klientiks_operations."},
-}
-SUPPORTED_SOURCES = {key for key, meta in SOURCE_META.items() if "endpoint" in meta}
+# Каталог дверей (площадки, источники, категории) — webapp/doors.py.
 
 
 def build_platform_cards() -> list[dict]:
@@ -449,18 +463,62 @@ def build_source_cards(project_id: int, slug: str) -> list[dict]:
     return cards
 
 
+PLATFORM_SHORT = {"wb": "WB", "ozon": "Ozon"}
+
+
+def build_doors(project_id: int, slug: str, platforms: list) -> dict:
+    """Двери страницы «Загрузка» по категориям: {"standard": [...], "custom": [...]}.
+
+    Каждая дверь — dict параметров для partials/upload_card.html. Стандартные двери
+    видны всегда (недоступные — серой карточкой с причиной); индивидуальные — только
+    включённые у проекта (у чужого клиента чужие двери не нужны)."""
+    standard, custom = [], []
+    for d in doors.PLATFORM_DOORS:
+        standard.append({
+            "key": d["key"], "title": d["label"], "description": d["description"],
+            "action": url_for(d["endpoint"], slug=slug), "input_id": d["input_id"],
+            "input_name": d["input_name"], "multiple": d["multiple"], "accept": ".xlsx",
+            "needs_cabinet": True, "platform": d["platform"],
+            "disabled": d["platform"] not in platforms,
+            "disabled_reason": f"У проекта нет кабинетов {PLATFORM_SHORT.get(d['platform'], d['platform'])}.",
+        })
+    for p in build_platform_cards():           # площадки без адаптера — серые заглушки
+        standard.append({
+            "key": p["key"], "title": p["label"], "description": "", "action": None,
+            "needs_cabinet": False, "platform": None, "disabled": True,
+            "disabled_reason": "Площадка пока не поддерживается — адаптер загрузки ещё не реализован.",
+        })
+    for c in build_source_cards(project_id, slug):
+        kind = doors.source_kind(c["key"])
+        if kind == CUSTOM and not c["enabled"]:
+            continue
+        door = {
+            "key": c["key"], "title": c["label"], "description": c["description"], "action": c["action"],
+            "input_id": "files-" + c["key"], "input_name": "files", "multiple": True,
+            "accept": c["accept"] or ".xlsx", "needs_cabinet": False, "platform": None,
+            "pull": c["pull"], "disabled": not c["action"],
+            "disabled_reason": ("Источник недоступен для этого проекта." if not c["enabled"]
+                                else "Источник пока не поддерживается — адаптер загрузки ещё не реализован."),
+        }
+        (standard if kind == STANDARD else custom).append(door)
+    return {"standard": standard, "custom": custom}
+
+
 def upload_form_context(project_id: int, slug: str, error: str | None = None) -> dict:
     platforms = get_project_platforms(project_id, slug)
+    cabinet_platforms = get_project_cabinet_platforms(project_id, slug)
+    d = build_doors(project_id, slug, platforms)
     return {
         "error": error,
         "slug": slug,
-        # Кабинет — общее поле для всех площадок с кабинетами (WB и Ozon),
-        # поэтому без фильтра по platform: даталист собирает кабинеты обеих.
-        "cabinets": get_project_cabinets(project_id, slug),
-        "has_wb": "wb" in platforms,
-        "has_ozon": "ozon" in platforms,
-        "other_platforms": build_platform_cards(),
-        "sources": build_source_cards(project_id, slug),
+        # Кабинеты для переключателя: имя + площадки (бейдж и включение/выключение дверей).
+        "cabinet_options": [
+            {"value": name, "label": name, "badge": " · ".join(PLATFORM_SHORT.get(x, x) for x in plats),
+             "meta": ",".join(plats)}
+            for name, plats in cabinet_platforms.items()
+        ],
+        "doors_standard": d["standard"],
+        "doors_custom": d["custom"],
     }
 
 
@@ -731,7 +789,7 @@ def upload_klientiks(slug):
 @app.route("/profile", methods=["GET"])
 @login_required
 def profile():
-    return render_template("profile.html", projects=get_user_projects(int(current_user.id)))
+    return render_template("profile.html")
 
 
 if __name__ == "__main__":

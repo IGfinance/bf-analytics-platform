@@ -24,16 +24,6 @@
     </div>
 
     <div class="flex items-center gap-2 lg:gap-4">
-      {# Алерты — счётчик непрочитанных из таблицы alerts (появится с миграцией) #}
-      <button type="button"
-              class="relative p-2 rounded-lg text-secondary hover:bg-surface-hover hover:text-primary transition-colors duration-150"
-              aria-label="Алерты">
-        {% include "icons/bell.svg" %}
-        {% if unread_alerts %}
-          <span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-danger animate-pulse"></span>
-        {% endif %}
-      </button>
-
       {% if current_user.is_authenticated %}
         <div class="hidden sm:flex items-center gap-2">
           <span class="text-sm text-secondary">{{ current_user.full_name }}</span>
