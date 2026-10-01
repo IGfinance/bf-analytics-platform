@@ -15,6 +15,15 @@
 -- можем обработать") — не связано с содержимым комментария, дело именно
 -- в пустой "--" самой по себе. После "--" всегда должен идти пробел или
 -- текст, пустых строк-разделителей в этом файле больше нет намеренно.
+-- 2026-10-01: ставка маркетинга (mkt_psy_rate/mkt_pso_rate) портирована с
+-- realt_unitka_visits.sql/realt_unitka_clients.sql (там переписано
+-- 2026-09-20) — знаменатель сменён с «все визиты специальности»
+-- (visits_psy/pso) на «новые клиенты специальности» (new_clients_psy/pso,
+-- visit_seq=1), и в filtered_overhead ставка маркетинга обнуляется для
+-- визитов с visit_seq!=1. До этой правки здесь была СТАРАЯ логика (на
+-- визит, без обнуления повторных) — эта карточка не входила в правку
+-- 2026-09-20, расходилась с 183/187. Остальные накладные (аренда/админы/
+-- управление) не трогали — там знаменатель как был, так и остался.
 WITH
 base AS (
     SELECT
@@ -97,10 +106,17 @@ overhead_payroll AS (
     GROUP BY mnum
 ),
 clinic_visits AS (
+    -- new_clients_psy/pso (2026-10-01, портировано из realt_unitka_visits.sql):
+    -- визиты с visit_seq=1 (первый визит клиента за всю историю) той же
+    -- роли — знаменатель для ставки маркетинга теперь на НОВОГО КЛИЕНТА,
+    -- не на визит (маркетинг — это стоимость привлечения, повторные визиты
+    -- его не несут, см. filtered_overhead ниже).
     SELECT
         toMonth(month)                                        AS mnum,
         countIf(role_group IN ('ФОТ Психиатры', 'ФОТ ШАА'))    AS visits_psy,
         countIf(role_group = 'ФОТ Психологи')                  AS visits_pso,
+        countIf(visit_seq = 1 AND role_group IN ('ФОТ Психиатры', 'ФОТ ШАА')) AS new_clients_psy,
+        countIf(visit_seq = 1 AND role_group = 'ФОТ Психологи')               AS new_clients_pso,
         countIf(visit_floor = '2 этаж')                        AS visits_2et,
         countIf(visit_floor = '3 этаж')                        AS visits_3et,
         countIf(visit_floor = 'ШАА')                           AS visits_shaa,
@@ -147,9 +163,9 @@ overhead_monthly AS (
             * coalesce(cv.revenue_3et, 0) / nullIf(coalesce(cv.revenue_2et, 0) + coalesce(cv.revenue_3et, 0), 0)
         ) / nullIf(cv.visits_3et, 0) AS upr_rate_3et,
         0.8 * ( -coalesce(op.mkt_fot, 0) + coalesce(op.mkt_taxes, 0) + coalesce(pl.mkt_pl_cost, 0) )
-            / nullIf(cv.visits_psy, 0) AS mkt_psy_rate,
+            / nullIf(cv.new_clients_psy, 0) AS mkt_psy_rate,
         0.2 * ( -coalesce(op.mkt_fot, 0) + coalesce(op.mkt_taxes, 0) + coalesce(pl.mkt_pl_cost, 0) )
-            / nullIf(cv.visits_pso, 0) AS mkt_pso_rate
+            / nullIf(cv.new_clients_pso, 0) AS mkt_pso_rate
     FROM clinic_visits cv
     LEFT JOIN overhead_payroll op ON cv.mnum = op.mnum
     LEFT JOIN pl_overhead pl ON cv.mnum = pl.mnum
@@ -165,8 +181,9 @@ filtered_overhead AS (
             0
         ) AS fixed_rate_for_visit,
         multiIf(
-            f.role_group IN ('ФОТ Психиатры', 'ФОТ ШАА'), om.mkt_psy_rate,
-            f.role_group = 'ФОТ Психологи', om.mkt_pso_rate,
+            f.visit_seq != 1, 0,
+            f.role_group IN ('ФОТ Психиатры', 'ФОТ ШАА'), coalesce(om.mkt_psy_rate,0),
+            f.role_group = 'ФОТ Психологи', coalesce(om.mkt_pso_rate,0),
             0
         ) AS mkt_rate_for_visit
     FROM filtered f
