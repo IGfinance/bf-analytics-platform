@@ -10,6 +10,10 @@
 #      (добавьте в aliases к существующему полю) или правда новое поле
 #      (добавьте новую запись ниже + ALTER TABLE ADD COLUMN в ClickHouse).
 
+# optional: true — колонки, которых нет в части реальных файлов WB (сверено по 403
+# файлам CloudSix 2026-10-02). Их отсутствие НЕ ошибка при загрузке; отсутствие
+# любой другой денежной (Float64) колонки — ошибка (см. upload_checks/core.py).
+
 columns:
   row_num:                         { type: Int32,    aliases: ["№"] }
   supply_number:                   { type: String,   aliases: ["Номер поставки"] }
@@ -81,10 +85,10 @@ columns:
   storage_cost:                    { type: Float64,  aliases: ["Хранение"] }
   deductions:                      { type: Float64,  aliases: ["Удержания"] }
   acceptance_operations:           { type: Float64,  aliases: ["Операции на приемке"] }
-  chrt_id:                         { type: String,   aliases: ["chrtId"] }
+  chrt_id:                         { type: String, optional: true,   aliases: ["chrtId"] }
   warehouse_fixed_coefficient:     { type: Float64,  aliases: ["Фиксированный коэффициент склада по поставке"] }
   legal_entity_sale_flag:          { type: String,   aliases: ["Признак продажи юридическому лицу"] }
-  inventory_item:                  { type: String,   aliases: ["ТМЦ"] }
+  inventory_item:                  { type: String, optional: true,   aliases: ["ТМЦ"] }
   box_number:                      { type: String,   aliases: ["Номер короба для обработки товара"] }
   cofinancing_discount:            { type: Float64,  aliases: ["Скидка по программе софинансирования"] }
   wibes_discount_pct:              { type: Float64,  aliases: ["Скидка Wibes, %"] }
@@ -103,5 +107,5 @@ columns:
   substitute_article_id:           { type: String,   aliases: ["Id подменного артикула"] }
   substitute_article_discount_pct: { type: Float64,  aliases: ["Скидка по подменному артикулу, %"] }
   wholesale_business_discount_pct: { type: Float64,  aliases: ["Оптовая скидка для бизнеса, %"] }
-  buyer_inn:                       { type: String,   aliases: ["ИНН покупателя-юрлица или ИП"] }
-  social_certificate_payment:      { type: Float64,  aliases: ["Оплата социальным сертификатом"] }
+  buyer_inn:                       { type: String, optional: true,   aliases: ["ИНН покупателя-юрлица или ИП"] }
+  social_certificate_payment:      { type: Float64, optional: true,  aliases: ["Оплата социальным сертификатом"] }

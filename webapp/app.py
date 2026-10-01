@@ -53,6 +53,7 @@ load_dotenv(WEBAPP_DIR / ".env")       # секреты веб-формы (мо�
 from wb_core import ingest_files, get_client          # noqa: E402
 from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
 from ozon_core import ingest_files as ingest_ozon      # noqa: E402
+from upload_checks.core import UploadRejected, check_cabinet, has_errors  # noqa: E402
 from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
 from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
 from klientiks_core import ingest_files as ingest_klientiks  # noqa: E402
@@ -214,6 +215,27 @@ def get_project_sources(project_id: int, database: str) -> list[str]:
     except Exception:
         log.exception("Не удалось получить источники проекта id=%s", project_id)
         return []
+
+
+def reject_unknown_cabinet(slug: str, cabinet: str, platform: str):
+    """Серверная проверка кабинета (ТЗ 04): только из списка кабинетов проекта на этой
+    площадке, новые кабинеты через форму не создаются. Возвращает готовый ответ 400
+    с причиной либо None, если кабинет в порядке."""
+    results = check_cabinet(cabinet, get_project_cabinets(g.project["id"], g.project["slug"], platform))
+    if not has_errors(results):
+        return None
+    return render_template(
+        "detail_result.html", error=None, summary=None, logs=[], slug=slug,
+        rejected=[r.as_dict() for r in results],
+    ), 400
+
+
+def render_rejected(slug: str, exc: UploadRejected, logs: list):
+    """Файл отклонён проверками до записи: 400 и список причин, в базе ничего нет."""
+    return render_template(
+        "detail_result.html", error=None, summary=None, logs=logs, slug=slug,
+        rejected=[r.as_dict() for r in exc.results],
+    ), 400
 
 
 def project_access_required(view):
@@ -455,6 +477,9 @@ def upload_detail(slug):
         return render_template(
             "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
         ), 400
+    rejected = reject_unknown_cabinet(slug, cabinet, "wb")
+    if rejected:
+        return rejected
     if not files or all(f.filename == "" for f in files):
         return render_template(
             "upload_form.html",
@@ -482,7 +507,10 @@ def upload_detail(slug):
         logs.append(f"Пропущены не-xlsx файлы: {', '.join(skipped)}")
 
     try:
-        summary = ingest_files(saved_paths, cabinet, log=logs.append, database=g.project["slug"])
+        summary = ingest_files(saved_paths, cabinet, log=logs.append, database=g.project["slug"],
+                               user_id=current_user.id, project=g.project["slug"])
+    except UploadRejected as e:
+        return render_rejected(slug, e, logs)
     except Exception as e:
         return render_template(
             "detail_result.html", error=str(e), summary=None, logs=logs, slug=slug,
@@ -507,6 +535,9 @@ def upload_summary(slug):
         return render_template(
             "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
         ), 400
+    rejected = reject_unknown_cabinet(slug, cabinet, "wb")
+    if rejected:
+        return rejected
     if not f or f.filename == "":
         return render_template(
             "upload_form.html", **upload_form_context(g.project["id"], slug, "Выберите файл"),
@@ -566,6 +597,9 @@ def upload_ozon(slug):
         return render_template(
             "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
         ), 400
+    rejected = reject_unknown_cabinet(slug, cabinet, "ozon")
+    if rejected:
+        return rejected
     if not files or all(f.filename == "" for f in files):
         return render_template(
             "upload_form.html",
@@ -593,7 +627,10 @@ def upload_ozon(slug):
         logs.append(f"Пропущены не-xlsx файлы: {', '.join(skipped)}")
 
     try:
-        summary = ingest_ozon(saved_paths, cabinet, log=logs.append, database=g.project["slug"])
+        summary = ingest_ozon(saved_paths, cabinet, log=logs.append, database=g.project["slug"],
+                              user_id=current_user.id, project=g.project["slug"])
+    except UploadRejected as e:
+        return render_rejected(slug, e, logs)
     except Exception as e:
         return render_template(
             "detail_result.html", error=str(e), summary=None, logs=logs, slug=slug,

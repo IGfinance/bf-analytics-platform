@@ -21,6 +21,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from upload_checks.core import UploadRejected
 from wb_core import ingest_files, load_mapping, process_file, SCRIPT_DIR
 
 load_dotenv(SCRIPT_DIR.parent / ".env")  # .env лежит в корне репозитория, на уровень выше src/
@@ -50,7 +51,14 @@ def main():
         print("Dry-run: в ClickHouse ничего не пишу.")
         return
 
-    summary = ingest_files(files, args.cabinet)
+    try:
+        summary = ingest_files(files, args.cabinet)
+    except UploadRejected as e:
+        print("Файлы не загружены, в базу ничего не записано:")
+        for r in e.results:
+            print(f"  [{r.severity}] {r.message}")
+        raise SystemExit(1)
+    print(f"Записано новых строк: {summary['rows']}, пропущено дублей: {summary['duplicates_skipped']}")
     if summary["unmapped_columns"]:
         print("Проверьте и обновите column_mapping_wb.yaml для колонок:", summary["unmapped_columns"])
 
