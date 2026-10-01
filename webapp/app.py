@@ -35,7 +35,9 @@ import logging
 import ntpath
 import os
 import time
+import uuid
 import posixpath
+import re
 import sys
 from pathlib import Path
 
@@ -124,6 +126,37 @@ app.jinja_env.globals["asset_v"] = asset_v
 
 UPLOAD_DIR = WEBAPP_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+GENERIC_UPLOAD_ERROR = ("Не удалось обработать загрузку из-за внутренней ошибки. Попробуйте ещё раз "
+                        "или обратитесь к администратору.")
+
+
+def upload_dest(filename: str) -> Path:
+    """Путь для сохранения загруженного файла: у КАЖДОГО файла своя временная папка.
+    Имя файла сохраняем (из него берётся номер отчёта), но общей папки нет — иначе два
+    одновременных запроса с одинаковым именем файла (разные проекты) перезаписали бы друг друга
+    и один обработал бы чужой файл."""
+    folder = UPLOAD_DIR / uuid.uuid4().hex
+    folder.mkdir()
+    return folder / filename
+
+
+def discard_upload(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def upload_failed(exc: Exception, slug: str) -> str:
+    """Текст ошибки для пользователя. Сырое исключение (текст ClickHouse, пути, хосты) в интерфейс
+    не отдаём — только в журнал. Исключение: ValueError с русским текстом — это наши собственные
+    понятные сообщения проверки (например, «не найден номер отчёта в имени файла»)."""
+    log.exception("Сбой загрузки в проекте %s", slug)
+    if isinstance(exc, ValueError) and re.search("[а-яА-ЯёЁ]", str(exc)):
+        return str(exc)[:300]
+    return GENERIC_UPLOAD_ERROR
 
 
 
@@ -567,7 +600,7 @@ def upload_detail(slug):
         if not filename.lower().endswith(".xlsx"):
             skipped.append(f.filename)
             continue
-        dest = UPLOAD_DIR / filename
+        dest = upload_dest(filename)
         f.save(dest)
         saved_paths.append(dest)
 
@@ -588,11 +621,11 @@ def upload_detail(slug):
         return render_rejected(slug, e, logs)
     except Exception as e:
         return render_template(
-            "detail_result.html", error=str(e), summary=None, logs=logs, slug=slug,
+            "detail_result.html", error=upload_failed(e, slug), summary=None, logs=logs, slug=slug,
         ), 500
     finally:
         for p in saved_paths:
-            p.unlink(missing_ok=True)
+            discard_upload(p)
 
     return render_template(
         "detail_result.html", error=None, summary=summary, logs=logs, slug=slug,
@@ -625,7 +658,7 @@ def upload_summary(slug):
             **upload_form_context(g.project["id"], slug, "Файл должен быть .xlsx"),
         ), 400
 
-    dest = UPLOAD_DIR / filename
+    dest = upload_dest(filename)
     f.save(dest)
 
     logs = []
@@ -635,11 +668,11 @@ def upload_summary(slug):
         reconcile_rows = run_reconciliation(client, cabinet, log=logs.append)
     except Exception as e:
         return render_template(
-            "summary_result.html", error=str(e), ingest_rows=0, total=0, failed=0,
+            "summary_result.html", error=upload_failed(e, slug), ingest_rows=0, total=0, failed=0,
             failures=[], logs=logs, slug=slug,
         ), 500
     finally:
-        dest.unlink(missing_ok=True)
+        discard_upload(dest)
 
     # Преобразуем tuple-результат в dict для шаблона
     FIELDS = [
@@ -687,7 +720,7 @@ def upload_ozon(slug):
         if not filename.lower().endswith(".xlsx"):
             skipped.append(f.filename)
             continue
-        dest = UPLOAD_DIR / filename
+        dest = upload_dest(filename)
         f.save(dest)
         saved_paths.append(dest)
 
@@ -708,11 +741,11 @@ def upload_ozon(slug):
         return render_rejected(slug, e, logs)
     except Exception as e:
         return render_template(
-            "detail_result.html", error=str(e), summary=None, logs=logs, slug=slug,
+            "detail_result.html", error=upload_failed(e, slug), summary=None, logs=logs, slug=slug,
         ), 500
     finally:
         for p in saved_paths:
-            p.unlink(missing_ok=True)
+            discard_upload(p)
 
     return render_template(
         "detail_result.html", error=None, summary=summary, logs=logs, slug=slug,
@@ -740,7 +773,7 @@ def handle_source_upload(slug: str, ext: str, ingest_fn, source_label: str):
         if not filename.lower().endswith(ext):
             skipped.append(f.filename)
             continue
-        dest = UPLOAD_DIR / filename
+        dest = upload_dest(filename)
         f.save(dest)
         saved_paths.append(dest)
 
@@ -760,12 +793,12 @@ def handle_source_upload(slug: str, ext: str, ingest_fn, source_label: str):
         )
     except Exception as e:
         return render_template(
-            "source_result.html", error=str(e), summary=None, logs=logs,
+            "source_result.html", error=upload_failed(e, slug), summary=None, logs=logs,
             slug=slug, source_label=source_label,
         ), 500
     finally:
         for p in saved_paths:
-            p.unlink(missing_ok=True)
+            discard_upload(p)
 
     return render_template(
         "source_result.html", error=None, summary=summary, logs=logs,

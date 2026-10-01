@@ -39,6 +39,7 @@ class SourceSpec:
     existing_where: Callable[[str, list], tuple]   # (cabinet, rows) -> (where_sql, params)
     pre_file: Callable[[Path], list] = lambda path: []
     post_ingest: Optional[Callable] = None         # (client, cabinet, parsed) -> {file: [CheckResult]}
+    pre_db: Optional[Callable] = None              # (client, cabinet, parsed) -> {file: [CheckResult]}; проверки по БД до записи
 
 
 def _read_headers(path: Path, header_row: int) -> list:
@@ -89,6 +90,13 @@ def run_ingest(spec: SourceSpec, files: list, cabinet: str, *, log_fn=print,
                 "empty_file", ERROR, "В файле нет строк с данными. Файл не загружен."))
     if any(has_errors(o.results) for o in outcomes.values()):
         _reject()
+
+    # 2б. Проверки против БД до записи (например, отчёт уже загружен в ДРУГОЙ кабинет)
+    if spec.pre_db:
+        for fname, results in spec.pre_db(client, cabinet, parsed).items():
+            outcomes[fname].results.extend(results)
+        if any(has_errors(o.results) for o in outcomes.values()):
+            _reject()
 
     # 3. Дедуп: пропускаем строки, уже лежащие в базе (по содержимому)
     fp_cols = [c for c in canonical_type if c not in spec.fp_exclude]

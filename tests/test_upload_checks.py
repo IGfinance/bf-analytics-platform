@@ -31,6 +31,14 @@ class FakeClient:
 
     def query(self, sql, parameters=None):
         import re
+        if "groupUniqArray(cabinet)" in sql:                       # проверка «отчёт уже в другом кабинете»
+            rns, cab = set(parameters["rns"]), parameters["cabinet"]
+            stored = self.tables.get("wb_reports", ([], []))[1]
+            found = {}
+            for r in stored:
+                if r["report_number"] in rns and r["cabinet"] != cab:
+                    found.setdefault(r["report_number"], set()).add(r["cabinet"])
+            return type("R", (), {"result_rows": [(k, sorted(v)) for k, v in found.items()]})()
         m = re.match(r"SELECT (.+) FROM (\w+) FINAL", sql)
         cols = [c.strip() for c in m.group(1).split(",")]
         stored = self.tables.get(m.group(2), ([], []))[1]
@@ -317,3 +325,16 @@ def test_logistics_coefficient_column_is_optional_float_and_not_extra(tmp_path, 
     assert not any(r["name"] == "unmapped_columns" for r in res["outcomes"][0]["results"])
     stored = client.tables["wb_reports"][1][0]
     assert stored["logistics_coefficient"] == 10.5 and "Коэффициент логистики" not in stored["extra_columns"]
+
+
+def test_report_already_loaded_under_other_cabinet_is_rejected(tmp_path, client):
+    f = tmp_path / "Отчёт №888_1.xlsx"
+    _write_xlsx(f, wb_core, 0)
+    wb_source.ingest([f], "Feel", log_fn=lambda *_: None, database="cloudsix")
+    with pytest.raises(UploadRejected) as e:                                  # тот же отчёт, но выбран другой кабинет
+        wb_source.ingest([f], "ARB", log_fn=lambda *_: None, database="cloudsix")
+    msg = [r.message for r in e.value.results if r.name == "report_in_other_cabinet"][0]
+    assert "Feel" in msg and "ARB" in msg
+    assert len(client.tables["wb_reports"][1]) == 3                           # в ARB ничего не записано
+    again = wb_source.ingest([f], "Feel", log_fn=lambda *_: None, database="cloudsix")   # в свой кабинет — дубли, не отказ
+    assert again["rows"] == 0 and again["duplicates_skipped"] == 3

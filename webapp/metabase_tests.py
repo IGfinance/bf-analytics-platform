@@ -33,7 +33,8 @@ log = logging.getLogger(__name__)
 TESTS_COLLECTION_NAME = "Тесты"
 LEVEL_COLUMN = "Уровень"
 MAX_ROWS_SHOWN = 50
-REQUEST_TIMEOUT_S = 60
+REQUEST_TIMEOUT_S = 30
+REFRESH_MIN_INTERVAL_S = 30   # «Обновить» чаще раза в 30 с отдаёт кэш: клик не должен гонять все тесты в Metabase
 SEVERITY_ORDER = {"ok": 0, "warn": 1, "error": 2, "failed": 2}
 
 
@@ -157,7 +158,7 @@ class MetabaseTestsClient:
         now = time.time()
         with self._lock:
             cached = self._cache.get(key)
-        if cached and not refresh and now - cached.fetched_at < self.ttl:
+        if cached and now - cached.fetched_at < (REFRESH_MIN_INTERVAL_S if refresh else self.ttl):
             return cached
         try:
             report = self._fetch(project_keys)
