@@ -19,7 +19,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 REPO_ROOT = Path(__file__).parent.parent
 load_dotenv(REPO_ROOT / ".env")

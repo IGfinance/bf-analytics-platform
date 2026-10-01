@@ -25,7 +25,7 @@ import clickhouse_connect
 import ch_connect
 import openpyxl
 import requests
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 SCRIPT_DIR = Path(__file__).parent
 load_dotenv(SCRIPT_DIR.parent / ".env")

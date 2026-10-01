@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 from bank_statement_1c import parse_dir, ingest_files, SCRIPT_DIR
 

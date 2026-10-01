@@ -12,7 +12,7 @@
 """
 
 import argparse
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 from wb_core import get_client, SCRIPT_DIR
 

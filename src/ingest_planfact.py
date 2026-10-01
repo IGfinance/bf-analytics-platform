@@ -14,7 +14,7 @@ from pathlib import Path
 
 import clickhouse_connect
 import ch_connect
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 from planfact_xlsx import parse_xlsx, SCRIPT_DIR
 

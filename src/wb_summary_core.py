@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 import clickhouse_connect
 import ch_connect
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 SCRIPT_DIR = Path(__file__).parent
 load_dotenv(SCRIPT_DIR.parent / ".env")  # .env лежит в корне репозитория, на уровень выше src/

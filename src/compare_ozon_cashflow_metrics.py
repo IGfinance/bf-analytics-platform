@@ -20,7 +20,7 @@ compare_ozon_cashflow.py под именем метрики total_amount_vs_cash
 import argparse
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 SCRIPT_DIR = Path(__file__).parent
 load_dotenv(SCRIPT_DIR.parent / ".env")

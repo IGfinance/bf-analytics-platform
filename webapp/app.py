@@ -39,7 +39,6 @@ import posixpath
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
 from flask import Flask, abort, g, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
@@ -48,17 +47,17 @@ ROOT_DIR = WEBAPP_DIR.parent
 SRC_DIR = ROOT_DIR / "src"
 sys.path.insert(0, str(SRC_DIR))
 
+from dotenv_safe import load_dotenv                    # noqa: E402  (src/ уже в sys.path)
+
+
 def _load_env(path: Path) -> None:
-    """load_dotenv, который не падает, если файл недоступен этому пользователю.
+    """Грузит .env, не падая, если файл недоступен этому пользователю.
 
     На проде сервис работает от www-data и читает ТОЛЬКО webapp/.env (ключи проектов ClickHouse,
     секрет Flask, Metabase); общий корневой .env — root-only (там пароль админа ClickHouse, ключи
     площадок, реквизиты SSH) и сервису недоступен. Первым грузится webapp/.env: python-dotenv
     не перезаписывает уже заданные переменные, поэтому его значения главнее корневого."""
-    try:
-        load_dotenv(path)
-    except OSError:
-        pass
+    load_dotenv(path)
 
 
 _load_env(WEBAPP_DIR / ".env")   # прод: всё, что нужно сервису (см. ТЗ 04, блок D)

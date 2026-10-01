@@ -12,7 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv_safe import load_dotenv
 
 from klientiks_core import parse_file, ingest_files, SCRIPT_DIR
 

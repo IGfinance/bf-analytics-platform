@@ -93,3 +93,49 @@ def test_no_module_connects_to_clickhouse_directly():
             if re.search(r"clickhouse_connect\.get_(async_)?client\(", path.read_text(encoding="utf-8")):
                 offenders.append(str(path.relative_to(ROOT)))
     assert offenders == []
+
+
+# ------------------------------------------------- .env, недоступный сервису (инцидент 2026-10-02)
+
+def test_dotenv_safe_survives_unreadable_env_file(tmp_path):
+    import os
+    import dotenv_safe
+    f = tmp_path / ".env"
+    f.write_text("X_TEST_VAR=1\n")
+    f.chmod(0o000)
+    try:
+        if os.access(f, os.R_OK):
+            pytest.skip("файл читается (root) — нечем проверять отказ в доступе")
+        assert dotenv_safe.load_dotenv(f) is False                 # не бросает PermissionError
+    finally:
+        f.chmod(0o600)
+
+
+def test_no_module_calls_python_dotenv_load_dotenv_directly():
+    """Прямой dotenv.load_dotenv на недоступном .env роняет воркеры сервиса при импорте."""
+    offenders = []
+    for folder in ("src", "webapp"):
+        for path in (ROOT / folder).rglob("*.py"):
+            if path.name == "dotenv_safe.py":
+                continue
+            if re.search(r"from dotenv import .*load_dotenv|dotenv\.load_dotenv\(", path.read_text(encoding="utf-8")):
+                offenders.append(str(path.relative_to(ROOT)))
+    assert offenders == []
+
+
+def test_webapp_imports_with_unreadable_root_env(monkeypatch, tmp_path):
+    """Приложение импортируется, даже если загрузка корневого .env бросает PermissionError."""
+    import dotenv
+    real = dotenv.load_dotenv
+
+    def deny(path=None, *a, **kw):
+        if str(path).endswith("/.env") and "webapp" not in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(dotenv, "load_dotenv", deny)
+    for name in ("app", "wb_summary_core", "reconcile_wb", "wb_core"):
+        sys.modules.pop(name, None)
+    sys.path.insert(0, str(ROOT / "webapp"))
+    import importlib
+    importlib.import_module("app")
