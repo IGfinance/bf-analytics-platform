@@ -1,0 +1,12 @@
+{# Результаты проверок загрузки (ТЗ 04). Ожидает results — список dict
+   {name, severity: info|warn|error, message}. Только классы, уже собранные
+   в style.css (Tailwind JIT на деплое новых не добавит). #}
+{% if results %}
+  <ul class="mt-2 text-sm list-disc list-inside">
+    {% for r in results %}
+      <li class="{% if r.severity == 'error' %}text-danger font-medium{% elif r.severity == 'warn' %}text-warning{% else %}text-secondary{% endif %}">
+        {{ r.message }}
+      </li>
+    {% endfor %}
+  </ul>
+{% endif %}

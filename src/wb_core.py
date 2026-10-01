@@ -121,42 +121,18 @@ def get_client(database: str | None = None):
     )
 
 
-def ingest_files(files: list[Path], cabinet: str, log=print, database: str | None = None) -> dict:
-    """Загружает список xlsx-файлов в ClickHouse. Возвращает сводку по результату.
+def ingest_files(files: list[Path], cabinet: str, log=print, database: str | None = None,
+                 user_id=None, project: str | None = None) -> dict:
+    """Загружает список xlsx-файлов WB в ClickHouse. Возвращает сводку по результату.
+
+    С ТЗ 04 вся логика — в upload_checks (проверки файла до записи, пропуск
+    дублей, сверка со сводкой, журнал upload_checks). При жёсткой ошибке
+    проверки бросает upload_checks.core.UploadRejected, в базу ничего не пишется.
 
     database — БД проекта, которому принадлежит cabinet (см. g.project["slug"]
-    в webapp); None — читать CLICKHOUSE_DATABASE из окружения, как раньше
-    (используется CLI-скриптом ingest_wb.py).
+    в webapp); None — читать CLICKHOUSE_DATABASE из окружения (CLI ingest_wb.py).
     """
-    alias_to_canonical, canonical_type = load_mapping()
-    columns = ["cabinet", "report_number"] + list(canonical_type.keys()) + ["extra_columns", "source_file"]
+    from upload_checks import wb as wb_source   # поздний импорт: wb_source тянет wb_core
 
-    all_rows = []
-    unmapped_seen = set()
-    unmapped_log_entries = []
-
-    for path in files:
-        rows, unmapped_raw = process_file(path, cabinet, alias_to_canonical, canonical_type, unmapped_seen, log=log)
-        all_rows.extend(rows)
-        for raw_col in unmapped_raw:
-            unmapped_log_entries.append((path.name, raw_col))
-
-    client = get_client(database=database)
-
-    data = [[row.get(col) for col in columns] for row in all_rows]
-    client.insert("wb_reports", data, column_names=columns)
-    log(f"Загружено {len(data)} строк в wb_reports.")
-
-    if unmapped_log_entries:
-        client.insert(
-            "wb_unmapped_columns_log",
-            [[fname, col] for fname, col in unmapped_log_entries],
-            column_names=["source_file", "raw_column_name"],
-        )
-        log(f"Записано {len(unmapped_log_entries)} записей в unmapped_columns_log.")
-
-    return {
-        "files": len(files),
-        "rows": len(data),
-        "unmapped_columns": sorted(unmapped_seen),
-    }
+    return wb_source.ingest(files, cabinet, log_fn=log, database=database,
+                            user_id=user_id, project=project)

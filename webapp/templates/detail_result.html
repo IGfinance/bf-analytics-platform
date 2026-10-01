@@ -5,21 +5,28 @@
 {% block content %}
   <h1 class="text-2xl font-bold font-montserrat">Результат загрузки</h1>
 
-  {% if error %}
+  {% if rejected %}
+    <p class="mt-4 text-sm text-danger font-medium">Файл не загружен: в базу ничего не записано.</p>
+    {% set results = rejected %}
+    {% include "partials/check_results.html" %}
+  {% elif error %}
     <p class="mt-4 text-sm text-danger">Ошибка: {{ error }}</p>
   {% else %}
     <p class="mt-4 text-sm text-success-text">
-      Загружено файлов: {{ summary.files }}, строк: {{ summary.rows }}
+      Файлов: {{ summary.files }}. Строк в файлах: {{ summary.rows_in_file }},
+      записано новых: {{ summary.rows }},
+      пропущено дублей: {{ summary.duplicates_skipped }}.
     </p>
-    {% if summary.unmapped_columns %}
-      <div class="mt-4 bg-warning/10 border border-warning/30 rounded-lg p-4 max-w-xl">
-        <p class="text-sm text-warning font-medium">Встречены колонки не из маппинга колонок:</p>
-        <ul class="list-disc list-inside text-sm text-secondary mt-2">
-          {% for c in summary.unmapped_columns %}<li>{{ c }}</li>{% endfor %}
-        </ul>
-        <p class="text-xs text-secondary mt-2">Данные сохранены в extra_columns. Обновите маппинг при необходимости.</p>
+    {% for o in summary.outcomes %}
+      <div class="mt-4 bg-surface border border-border rounded-lg p-4 max-w-xl">
+        <p class="text-sm font-semibold">{{ o.source_file }}</p>
+        <p class="text-xs text-secondary mt-2">
+          в файле {{ o.rows_in_file }} · записано {{ o.rows_written }} · дублей пропущено {{ o.duplicates_skipped }}
+        </p>
+        {% set results = o.results %}
+        {% include "partials/check_results.html" %}
       </div>
-    {% endif %}
+    {% endfor %}
   {% endif %}
 
   {% include "partials/log_output.html" %}
