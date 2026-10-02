@@ -99,3 +99,35 @@ def test_parse_ozon_promotion_skips_rows_without_sku():
     rows, skipped = g.parse_ozon_promotion(values)
     assert rows == []
     assert skipped == 1
+
+
+REFERENCE_VALUES = [
+    ["Для WB", "", "", "Для Ozon"],
+    ["Кампания", "Артикул", "", "SKU", "Артикул"],
+    ["1446931490/GSM_Round_Black_v2/Поиск", "GSM_Round_Black_v2", "",
+     "3134230813", "TV_Lampa"],
+    ["1446931491/GSM_Round_v4/Поиск", "GSM_Round_v4", "",
+     "3010572109", "PowerBank_Mini_Каб_20_v3"],
+    ["", "", "", "4068406020", "повер 10 с беспр. зарядом"],  # WB-блок уже закончился
+]
+
+
+def test_parse_wb_promotion_reference():
+    rows, skipped = g.parse_wb_promotion_reference(REFERENCE_VALUES)
+    assert skipped == 1  # последняя строка без значения в столбце A
+    assert len(rows) == 2
+    assert rows[0] == {
+        "row_num": 3, "source_file": g.WB_PROMOTION_REFERENCE_SOURCE,
+        "campaign": "1446931490/GSM_Round_Black_v2/Поиск",
+        "article": "GSM_Round_Black_v2",
+    }
+
+
+def test_parse_ozon_promotion_reference():
+    rows, skipped = g.parse_ozon_promotion_reference(REFERENCE_VALUES)
+    assert skipped == 0
+    assert len(rows) == 3
+    assert rows[-1] == {
+        "row_num": 5, "source_file": g.OZON_PROMOTION_REFERENCE_SOURCE,
+        "sku": "4068406020", "article": "повер 10 с беспр. зарядом",
+    }
