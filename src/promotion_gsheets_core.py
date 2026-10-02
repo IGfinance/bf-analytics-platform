@@ -98,3 +98,55 @@ def parse_wb_promotion(values: list[list[str]]) -> tuple[list[dict], int]:
         rows.append(rec)
 
     return rows, skipped
+
+
+OZON_PROMOTION_SHEET_NAME = "Продв Ozon"
+OZON_PROMOTION_SOURCE = "gsheet:Продв Ozon"
+OZON_PROMOTION_COLUMNS = [
+    "project_id", "sku", "product_name", "tool", "placement", "campaign_id",
+    "spend_rub", "drr_in_promotion_pct", "sales_in_promotion_rub", "items_sold",
+    "sales_in_promotion_model_rub", "items_sold_model", "ctr_pct", "impressions",
+    "clicks", "cart_adds", "cart_conversion_pct", "drr_pct", "cost_per_order_rub",
+    "avg_click_cost_rub", "promo_date", "article", "row_num", "source_file",
+]
+# Позиции колонок во вкладке «Продв Ozon» (0-based; 19 — пустая разделительная)
+_OZON_POS = {
+    "sku": 0, "product_name": 1, "tool": 2, "placement": 3, "campaign_id": 4,
+    "spend_rub": 5, "drr_in_promotion_pct": 6, "sales_in_promotion_rub": 7,
+    "items_sold": 8, "sales_in_promotion_model_rub": 9, "items_sold_model": 10,
+    "ctr_pct": 11, "impressions": 12, "clicks": 13, "cart_adds": 14,
+    "cart_conversion_pct": 15, "drr_pct": 16, "cost_per_order_rub": 17,
+    "avg_click_cost_rub": 18, "promo_date": 20, "article": 21,
+}
+_OZON_STR_FIELDS = {"sku", "product_name", "tool", "placement", "campaign_id", "article"}
+_OZON_NUM_FIELDS = {
+    "spend_rub", "drr_in_promotion_pct", "sales_in_promotion_rub", "items_sold",
+    "sales_in_promotion_model_rub", "items_sold_model", "ctr_pct", "impressions",
+    "clicks", "cart_adds", "cart_conversion_pct", "drr_pct", "cost_per_order_rub",
+    "avg_click_cost_rub",
+}
+
+
+def parse_ozon_promotion(values: list[list[str]]) -> tuple[list[dict], int]:
+    """Вкладка «Продв Ozon» → записи. Возвращает (строки, пропущено).
+
+    Строка — данные, только если заполнен «SKU» (столбец A); иначе пропуск.
+    В отличие от WB здесь нет посуточной даты — promo_date (столбец U, тех.)
+    проставляется вручную 1-м числом месяца отчёта.
+    """
+    rows, skipped = [], 0
+    for row_num, raw in enumerate(values[1:], start=2):
+        sku = _cell(raw, _OZON_POS["sku"])
+        if not sku:
+            skipped += 1
+            continue
+
+        rec = {"row_num": row_num, "source_file": OZON_PROMOTION_SOURCE, "sku": sku}
+        for f in _OZON_STR_FIELDS - {"sku"}:
+            rec[f] = _cell(raw, _OZON_POS[f]) or None
+        for f in _OZON_NUM_FIELDS:
+            rec[f] = _num(_cell(raw, _OZON_POS[f]))
+        rec["promo_date"] = _date(_cell(raw, _OZON_POS["promo_date"]))
+        rows.append(rec)
+
+    return rows, skipped
