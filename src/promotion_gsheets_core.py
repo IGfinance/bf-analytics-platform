@@ -150,3 +150,52 @@ def parse_ozon_promotion(values: list[list[str]]) -> tuple[list[dict], int]:
         rows.append(rec)
 
     return rows, skipped
+
+
+REFERENCE_SHEET_NAME = "Справочник"
+WB_PROMOTION_REFERENCE_SOURCE = "gsheet:Справочник(WB)"
+OZON_PROMOTION_REFERENCE_SOURCE = "gsheet:Справочник(Ozon)"
+WB_PROMOTION_REFERENCE_COLUMNS = ["project_id", "campaign", "article", "row_num", "source_file"]
+OZON_PROMOTION_REFERENCE_COLUMNS = ["project_id", "sku", "article", "row_num", "source_file"]
+# Позиции колонок вкладки «Справочник» (0-based): левый блок «Для WB» (A/B),
+# правый блок «Для Ozon» (D/E); столбец C(2) — пустой разделитель. Данные
+# начинаются с 3-й строки (index 2) — первые две строки — заголовки блоков.
+_REF_WB_POS = {"campaign": 0, "article": 1}
+_REF_OZON_POS = {"sku": 3, "article": 4}
+
+
+def parse_wb_promotion_reference(values: list[list[str]]) -> tuple[list[dict], int]:
+    """Левый блок «Справочник» (столбцы A/B, «Для WB») → записи.
+
+    Строка — данные, только если заполнена «Кампания» (столбец A); блок
+    короче правого (Ozon) — строки, где он уже закончился, пропускаются.
+    """
+    rows, skipped = [], 0
+    for row_num, raw in enumerate(values[2:], start=3):
+        campaign = _cell(raw, _REF_WB_POS["campaign"])
+        if not campaign:
+            skipped += 1
+            continue
+        rows.append({
+            "row_num": row_num, "source_file": WB_PROMOTION_REFERENCE_SOURCE,
+            "campaign": campaign, "article": _cell(raw, _REF_WB_POS["article"]) or None,
+        })
+    return rows, skipped
+
+
+def parse_ozon_promotion_reference(values: list[list[str]]) -> tuple[list[dict], int]:
+    """Правый блок «Справочник» (столбцы D/E, «Для Ozon») → записи.
+
+    Строка — данные, только если заполнен «SKU» (столбец D).
+    """
+    rows, skipped = [], 0
+    for row_num, raw in enumerate(values[2:], start=3):
+        sku = _cell(raw, _REF_OZON_POS["sku"])
+        if not sku:
+            skipped += 1
+            continue
+        rows.append({
+            "row_num": row_num, "source_file": OZON_PROMOTION_REFERENCE_SOURCE,
+            "sku": sku, "article": _cell(raw, _REF_OZON_POS["article"]) or None,
+        })
+    return rows, skipped
