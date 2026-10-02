@@ -199,3 +199,98 @@ def parse_ozon_promotion_reference(values: list[list[str]]) -> tuple[list[dict],
             "sku": sku, "article": _cell(raw, _REF_OZON_POS["article"]) or None,
         })
     return rows, skipped
+
+
+def get_sheets_service():
+    """Google Sheets API через сервис-аккаунт (ключ из GSHEETS_SA_KEY) —
+    тот же сервис-аккаунт, что уже используется для Реальта, у него уже
+    есть доступ к этой таблице (проверено вручную)."""
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+
+    key_path = Path(os.environ["GSHEETS_SA_KEY"])
+    if not key_path.is_absolute():
+        key_path = SCRIPT_DIR.parent / key_path
+    creds = service_account.Credentials.from_service_account_file(str(key_path), scopes=SHEETS_SCOPE)
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
+def read_tab(spreadsheet_id: str, sheet_name: str) -> list[list[str]]:
+    svc = get_sheets_service()
+    res = svc.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id, range=sheet_name,
+    ).execute()
+    return res.get("values", [])
+
+
+def get_client(database: str | None = None):
+    host = os.environ["CLICKHOUSE_HOST"]
+    port = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
+    user = os.environ.get("CLICKHOUSE_USER", "default")
+    password = os.environ.get("CLICKHOUSE_PASSWORD", "")
+    if database is None:
+        database = os.environ.get("CLICKHOUSE_DATABASE", "default")
+    secure = os.environ.get("CLICKHOUSE_SECURE", "1") != "0"
+    return ch_connect.get_client(
+        host=host, port=port, username=user, password=password,
+        database=database, secure=secure,
+    )
+
+
+def _ingest(project_id: int, log, database: str | None, spreadsheet_id: str | None,
+            sheet_name: str, parse_fn, table: str, columns: list[str], source_label: str) -> dict:
+    """Общий каркас ingest_* для всех 4 вкладок «Продвижение CS»."""
+    if spreadsheet_id is None:
+        spreadsheet_id = os.environ["GSHEETS_SPREADSHEET_ID_CLOUDSIX_PROMOTION"]
+
+    log(f"  Читаю вкладку «{sheet_name}» из Google Sheets…")
+    values = read_tab(spreadsheet_id, sheet_name)
+    rows, skipped = parse_fn(values)
+    if skipped:
+        log(f"    Пропущено строк без ключа ({source_label}): {skipped}")
+    if not rows:
+        raise ValueError(f"Не найдено ни одной строки во вкладке «{sheet_name}» ({source_label})")
+
+    for row in rows:
+        row["project_id"] = project_id
+
+    client = get_client(database=database)
+    data = [[row.get(col) for col in columns] for row in rows]
+    client.insert(table, data, column_names=columns)
+    log(f"Загружено {len(data)} строк в {table}.")
+
+    return {"rows": len(data), "skipped": skipped}
+
+
+def ingest_wb_promotion(project_id: int, log=print, database: str | None = None,
+                        spreadsheet_id: str | None = None,
+                        sheet_name: str = WB_PROMOTION_SHEET_NAME) -> dict:
+    """Тянет вкладку «Продв WB» через Google Sheets API и пишет в wb_promotion."""
+    return _ingest(project_id, log, database, spreadsheet_id, sheet_name,
+                   parse_wb_promotion, "wb_promotion", WB_PROMOTION_COLUMNS, "кампания")
+
+
+def ingest_ozon_promotion(project_id: int, log=print, database: str | None = None,
+                          spreadsheet_id: str | None = None,
+                          sheet_name: str = OZON_PROMOTION_SHEET_NAME) -> dict:
+    """Тянет вкладку «Продв Ozon» через Google Sheets API и пишет в ozon_promotion."""
+    return _ingest(project_id, log, database, spreadsheet_id, sheet_name,
+                   parse_ozon_promotion, "ozon_promotion", OZON_PROMOTION_COLUMNS, "SKU")
+
+
+def ingest_wb_promotion_reference(project_id: int, log=print, database: str | None = None,
+                                  spreadsheet_id: str | None = None,
+                                  sheet_name: str = REFERENCE_SHEET_NAME) -> dict:
+    """Тянет левый блок «Справочник» (Для WB) и пишет в wb_promotion_reference."""
+    return _ingest(project_id, log, database, spreadsheet_id, sheet_name,
+                   parse_wb_promotion_reference, "wb_promotion_reference",
+                   WB_PROMOTION_REFERENCE_COLUMNS, "кампания")
+
+
+def ingest_ozon_promotion_reference(project_id: int, log=print, database: str | None = None,
+                                    spreadsheet_id: str | None = None,
+                                    sheet_name: str = REFERENCE_SHEET_NAME) -> dict:
+    """Тянет правый блок «Справочник» (Для Ozon) и пишет в ozon_promotion_reference."""
+    return _ingest(project_id, log, database, spreadsheet_id, sheet_name,
+                   parse_ozon_promotion_reference, "ozon_promotion_reference",
+                   OZON_PROMOTION_REFERENCE_COLUMNS, "SKU")
