@@ -3,12 +3,19 @@
 -- "Себестоимость" id 17 этой карточки нет).
 -- Раскрытие итога 90.02.1. Строки: Выручка (чистая, без НДС — как в основной
 -- таблице), ИТОГО (себестоимость), затем слои Материалы / ОПР / Прочие прямые
--- (и "Без разбивки", если есть); под каждым из трёх верхних слоёв — строка
+-- (затем "Без разбивки" и "Списания", если есть); под каждым из трёх верхних слоёв — строка
 -- "% от Выручки" (сумма слоя / Выручка того же месяца), затем строки внутри
 -- слоя: для "Материалов" — КАТЕГОРИИ (папки номенклатуры 1С второго уровня:
 -- этикетки, QR-коды, преформы… — bottling.material_folder; до конкретных
 -- позиций не углубляемся), для "ОПР" и "Прочих прямых" — статьи затрат; без
 -- префикса слоя, с отступом из неразрывных пробелов.
+-- СЛОЙ «Списания» (самый нижний, после «Без разбивки»): позиции из папок
+-- номенклатуры «Продукция …» и «Товары …» (готовая продукция и покупные
+-- товары, списанные через «материалы в производство»: июнь 2026 — вода 18,9 л
+-- 11,47 млн и соки ДБ 6,07 млн). Выделяются ЗДЕСЬ, в запросе карточки, а не в
+-- VIEW: Metabase-подключение к ClickHouse работает под пользователем
+-- mb_bottling без права CREATE/DROP VIEW. После перепроведения этих списаний
+-- через 94 в 1С они сами исчезнут из таблицы. Итог «ИТОГО» не меняется.
 -- Источник — VIEW bottling.cost_breakdown_long (cost_of_sales + выручка), ОДИН
 -- проход по ней (ARRAY JOIN раскладывает каждую строку на нужные строки
 -- таблицы). Только закрытые месяцы 1С. Фильтры: Группа / Период.
@@ -77,11 +84,11 @@ FROM
         ARRAY JOIN arrayConcat(
             if(is_revenue = 1,
                [('Выручка', toUInt8(0), toUInt8(0))],
-               [('ИТОГО', toUInt8(1), toUInt8(0)), (layer, toUInt8(multiIf(layer = 'Материалы', 2, layer = 'ОПР', 3, layer = 'Прочие прямые', 4, 5)), toUInt8(0))]),
+               [('ИТОГО', toUInt8(1), toUInt8(0)), (if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer), toUInt8(multiIf(if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer) = 'Материалы', 2, if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer) = 'ОПР', 3, if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer) = 'Прочие прямые', 4, if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer) = 'Списания', 6, 5)), toUInt8(0))]),
             arraySlice([(concat(unhex('C2A0C2A0C2A0'),
                                if(layer = 'Материалы', if(material_category != '', material_category, '—'),
                                   if(cost_item != '', cost_item, '—'))),
-                         toUInt8(multiIf(layer = 'Материалы', 2, layer = 'ОПР', 3, layer = 'Прочие прямые', 4, 5)), toUInt8(2))],
+                         toUInt8(multiIf(if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer) = 'Материалы', 2, if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer) = 'ОПР', 3, if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer) = 'Прочие прямые', 4, if(layer = 'Материалы' AND (material_category LIKE 'Продукция%' OR material_category LIKE 'Товары%'), 'Списания', layer) = 'Списания', 6, 5)), toUInt8(2))],
                        1, if(is_revenue = 0 AND layer != 'Без разбивки', 1, 0))
         ) AS t
         WHERE toYear(month) = 2026
