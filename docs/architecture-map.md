@@ -178,10 +178,14 @@ flowchart TD
 | `planfact_category_mapping` | кэшфлоу | 0 | Заготовка под маппинг статей (пока не заполнена) |
 | `planfact_unmapped_project_log` | кэшфлоу | 1 | Строки без бренда/площадки при загрузке |
 | `planfact_unmapped_statya_log` | кэшфлоу | 0 | Строки без статьи при загрузке |
+| `wb_promotion` | Продвижение CS | 1 942 | Продвижение WB поартикульно/посуточно — ручная Google-Таблица маркетолога (отдельный источник от `promotion_cost` в `wb_metrics_by_sku_month`) |
+| `ozon_promotion` | Продвижение CS | 58 | Продвижение Ozon поартикульно/помесячно — та же Google-Таблица |
+| `wb_promotion_reference` | Продвижение CS | 46 | Справочник Кампания→Артикул для `wb_promotion` (ведётся вручную) |
+| `ozon_promotion_reference` | Продвижение CS | 149 | Справочник SKU→Артикул для `ozon_promotion` (ведётся вручную) |
 | `bank_statements` | банк | 13 854 | Сырые банковские выписки 1С — р/с юрлиц |
 | `card_statements` | банк | 14 870 | Справки по картам физлиц (из PDF) |
 
-Плюс VIEW с формулами метрик (не таблицы с данными — см. раздел 4): `wb_metrics_by_cabinet_month`, `wb_metrics_by_sku_month`, `ozon_metrics_by_cabinet_month`, `ozon_metrics_by_cabinet_month_api`, `ozon_metrics_by_cabinet_month_cashflow_api`, `ozon_cashflow_reconciled_month`, `ozon_metrics_by_sku_month`.
+Плюс VIEW с формулами метрик (не таблицы с данными — см. раздел 4): `wb_metrics_by_cabinet_month`, `wb_metrics_by_sku_month`, `ozon_metrics_by_cabinet_month`, `ozon_metrics_by_cabinet_month_api`, `ozon_metrics_by_cabinet_month_cashflow_api`, `ozon_cashflow_reconciled_month`, `ozon_metrics_by_sku_month`, `promotion_by_article_month`.
 
 С 2026-09-23 в `wb_metrics_by_sku_month` (и, суммой, в `wb_metrics_by_cabinet_month`) считается **себестоимость**: `cogs` — (продажи минус возвраты) в штуках × себестоимость единицы за НЕДЕЛЮ операции из `wb_cogs_weekly`, знак минус (расход); `gross_profit` = `payable_total` + `cogs`. В `payable_total` себестоимость не входит намеренно — на этой метрике стоят сверки. С того же дня то же самое посчитано и для Ozon: появился `ozon_metrics_by_sku_month` (разрез по артикулу продавца + себестоимость), а `ozon_metrics_by_cabinet_month` стал тонкой агрегацией поверх него — по образцу пары WB-вьюх. Справочник себестоимости у площадок общий: один товар продаётся и на WB, и на Ozon по одной закупочной цене. Покрытие у Ozon заметно выше, чем у WB (97–100% единиц по всем кабинетам, кроме MaxJansen — его в файле нет вовсе). Особенность Ozon-разреза: артикул заполнен у 100% строк «Продажи»/«Возвраты»/«Вознаграждение Ozon», но полностью отсутствует у «Компенсации и декомпенсации»/«Прочие начисления», у 80% «Услуги FBO» и 35% «Продвижение и реклама» — эти расходы площадка начисляет на кабинет целиком, поэтому в разрезе артикула они сидят в строке `без артикула` и намеренно не распределены по товарам. Артикулы без себестоимости дают ноль, и ровно на сколько цифра занижена, видно по счётным колонкам `cogs_qty_covered`/`cogs_qty_uncovered` рядом (по проекту покрыто 85% единиц: CloudSix 97%, Hauser 99%, NoxLab 99%, INOVO 97%, Torado 85%, Feel 72%, Lampa 65%, ARB 42%).
 
