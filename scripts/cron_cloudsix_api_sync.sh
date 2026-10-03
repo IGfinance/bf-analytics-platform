@@ -7,8 +7,8 @@
 # лимит 1 запрос/мин ПРИВЯЗАН К ТОКЕНУ (не к IP, см. scripts/backfill_wb_api.py),
 # поэтому кабинеты можно грузить последовательно без взаимной конкуренции за
 # лимит, окно в неделю — 1-2 запроса на кабинет, весь прогон занимает минуты,
-# не часы. CloudNew НЕ в списке — токен отозван (см. вики, secrets/cabinet_api_keys.json
-# проверить перед тем как возвращать).
+# не часы. CloudNew вернулся в список 2026-10-04 (новый токен; история 2026
+# догружена scripts/backfill_wb_api.py).
 #
 # Ozon: /v1/finance/cash-flow-statement/list запрашивается ПО МЕСЯЦУ (не по дню,
 # см. src/ozon_cashflow_core.py) — без lookback, поэтому повторный запрос
@@ -43,7 +43,7 @@ source venv/bin/activate
 exec 9>/tmp/cloudsix-api-sync.lock
 flock -n 9 || { echo "$(date -Iseconds) — уже выполняется, выхожу"; exit 0; }
 
-WB_CABINETS="ARB CloudSix Feel Hauser INOVO Lampa NoxLab Torado"
+WB_CABINETS="ARB CloudNew CloudSix Feel Hauser INOVO Lampa NoxLab Torado"
 DATE_TO=$(date +%Y-%m-%d)
 DATE_FROM=$(date -d '7 days ago' +%Y-%m-%d)
 
