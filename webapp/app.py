@@ -74,6 +74,7 @@ from doors import (ALL_PLATFORMS, SUPPORTED_PLATFORMS, SOURCE_META,  # noqa: E40
                    SUPPORTED_SOURCES, STANDARD, CUSTOM)
 from upload_checks.core import UploadRejected, check_cabinet, has_errors  # noqa: E402
 from upload_checks.detect import ClickHouseKnowledge, detect as detect_file_cabinet  # noqa: E402
+from upload_checks.cogs import ingest as ingest_cogs  # noqa: E402
 from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
 from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
 from klientiks_core import ingest_files as ingest_klientiks  # noqa: E402
@@ -899,6 +900,48 @@ def handle_source_upload(slug: str, ext: str, ingest_fn, source_label: str):
         "source_result.html", error=None, summary=summary, logs=logs,
         slug=slug, source_label=source_label,
     )
+
+
+@app.route("/p/<slug>/upload/cogs", methods=["POST"])
+@login_required
+@project_access_required
+def upload_cogs(slug):
+    """Еженедельная матрица себестоимости (wb_cogs_weekly): проверки → запись только новых и изменённых
+    значений → отчёт о пробелах. Дверь доступна только проекту, у которого источник включён."""
+    if "cogs_weekly" not in get_project_sources(g.project["id"], g.project["slug"]):
+        abort(404)
+    files = request.files.getlist("files")
+    if not files or all(f.filename == "" for f in files):
+        return render_template(
+            "upload_form.html", **upload_form_context(g.project["id"], slug, "Выберите файл"),
+        ), 400
+    saved_paths, skipped = [], []
+    for f in files:
+        filename = safe_filename(f.filename)
+        if not filename.lower().endswith(".xlsx"):
+            skipped.append(f.filename)
+            continue
+        dest = upload_dest(filename)
+        f.save(dest)
+        saved_paths.append(dest)
+    if not saved_paths:
+        return render_template(
+            "upload_form.html", **upload_form_context(g.project["id"], slug, "Ни одного .xlsx файла не найдено"),
+        ), 400
+    logs = [f"Пропущены не-xlsx файлы: {', '.join(skipped)}"] if skipped else []
+    try:
+        summary = ingest_cogs(saved_paths, log_fn=logs.append, database=g.project["slug"],
+                              user_id=current_user.id, project=g.project["slug"])
+    except UploadRejected as e:
+        return render_rejected(slug, e, logs)
+    except Exception as e:
+        return render_template(
+            "detail_result.html", error=upload_failed(e, slug), summary=None, logs=logs, slug=slug,
+        ), 500
+    finally:
+        for p in saved_paths:
+            discard_upload(p)
+    return render_template("detail_result.html", error=None, summary=summary, logs=logs, slug=slug)
 
 
 @app.route("/p/<slug>/upload/bank", methods=["POST"])

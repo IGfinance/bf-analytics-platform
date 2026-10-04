@@ -46,6 +46,11 @@ SOURCE_META = {
     "klientiks": {"label": "Выгрузка Клиентикс", "accept": ".csv",
                   "endpoint": "upload_klientiks", "description":
                   "CSV-выгрузка визитов из Клиентикс — данные сохранятся в klientiks_operations."},
+    "cogs_weekly": {"label": "Себестоимость, еженедельная матрица", "accept": ".xlsx",
+                    "endpoint": "upload_cogs", "description":
+                    "Файл «СС … от …» (лист «CC общ»): себестоимость единицы по артикулам и неделям — данные "
+                    "сохранятся в wb_cogs_weekly. Записываются только новые и изменённые значения; "
+                    "после загрузки показывается, какие артикулы остались без себестоимости."},
 }
 SUPPORTED_SOURCES = {key for key, meta in SOURCE_META.items() if "endpoint" in meta}
 

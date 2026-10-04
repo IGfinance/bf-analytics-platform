@@ -50,13 +50,13 @@ def text(html):
 # ----------------------------------------------------------------- модель дверей
 
 def test_doors_state_standard_first_and_classification():
-    state = doors.doors_state({"wb", "ozon"}, {"bank_1c", "card_pdf", "klientiks"})
+    state = doors.doors_state({"wb", "ozon"}, {"bank_1c", "card_pdf", "klientiks", "cogs_weekly"})
     kinds = [d["kind"] for d in state]
     assert kinds == sorted(kinds, key=lambda k: 0 if k == doors.STANDARD else 1)
     by = {d["key"]: d for d in state}
     assert (by["wb_detail"]["kind"] == by["ozon_accruals"]["kind"] == by["bank_1c"]["kind"]
             == by["card_pdf"]["kind"] == doors.STANDARD)
-    assert by["klientiks"]["kind"] == doors.CUSTOM
+    assert by["klientiks"]["kind"] == by["cogs_weekly"]["kind"] == doors.CUSTOM
     assert all(d["active"] for d in state)
 
 
