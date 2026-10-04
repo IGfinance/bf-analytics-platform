@@ -224,8 +224,8 @@ ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN gross_profit 'Ва�
 ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN cogs_qty_covered 'Проданных единиц с известной себестоимостью. Формула — в wb_metrics_by_sku_brand_month.';
 ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN cogs_qty_uncovered 'Проданных единиц БЕЗ себестоимости (посчитаны по нулю) — на столько занижены cogs/gross_profit. Формула — в wb_metrics_by_sku_brand_month.';
 
-ALTER TABLE wb_metrics_by_sku_brand_month COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — 'Без бренда', без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
-ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — 'Без бренда', без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
+ALTER TABLE wb_metrics_by_sku_brand_month COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
+ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
 
 -- ==== API: из schema_wb_metrics_views_sku.sql ====
 CREATE VIEW IF NOT EXISTS wb_metrics_by_sku_brand_month_api AS
@@ -436,5 +436,5 @@ ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN gross_profit '�
 ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN cogs_qty_covered 'Проданных единиц с известной себестоимостью. Формула — в wb_metrics_by_sku_brand_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN cogs_qty_uncovered 'Проданных единиц БЕЗ себестоимости (посчитаны по нулю) — на столько занижены cogs/gross_profit. Формула — в wb_metrics_by_sku_brand_month_api.';
 
-ALTER TABLE wb_metrics_by_sku_brand_month_api COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — 'Без бренда', без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
-ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — 'Без бренда', без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
+ALTER TABLE wb_metrics_by_sku_brand_month_api COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
+ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';

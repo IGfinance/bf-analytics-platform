@@ -135,7 +135,7 @@ def to_api(text: str) -> str:
 
 def brand_comments(suffix: str) -> str:
     s, c = f"wb_metrics_by_sku_brand_month{suffix}", f"wb_metrics_by_cabinet_brand_month{suffix}"
-    txt = ("Бренд строки отчёта (brand), как есть; пустой бренд — 'Без бренда', без перераспределения по "
+    txt = ("Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по "
            "артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а "
            "не из справочника).")
     return (f"\nALTER TABLE {s} COMMENT COLUMN brand '{txt}';\n"
