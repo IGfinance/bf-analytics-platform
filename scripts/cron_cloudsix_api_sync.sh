@@ -64,4 +64,11 @@ echo "=== $(date -Iseconds) — Ozon реализация, $MONTH_FROM..$MONTH_T
 python3 src/ingest_ozon_realization.py --all-cabinets --from "$MONTH_FROM" --to "$MONTH_TO" --delay 5 \
     || echo "ОШИБКА: Ozon реализация упала, см. вывод выше"
 
+# Каталог товаров Ozon с брендами (ozon_products): нужен столбцу «Бренд» в адаптерах Ozon.
+# Бренд — атрибут карточки, в отчётах Ozon его нет; появляются новые товары и бренды, поэтому
+# обновляем ежедневно. Включает архивные товары (visibility=ALL их не отдаёт).
+echo "=== $(date -Iseconds) — Ozon каталог товаров (бренды), все кабинеты ==="
+python3 src/ingest_ozon_products.py --all-cabinets \
+    || echo "ОШИБКА: Ozon каталог товаров упал, см. вывод выше"
+
 echo "=== $(date -Iseconds) — готово ==="
