@@ -66,7 +66,7 @@ _load_env(WEBAPP_DIR / ".env")   # прод: всё, что нужно серв�
 _load_env(ROOT_DIR / ".env")     # локальная разработка: общий .env репозитория
 
 from wb_core import ingest_files, get_client          # noqa: E402
-from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
+from upload_checks.summary import ingest as ingest_summary  # noqa: E402   (проверки → запись)
 from ozon_core import ingest_files as ingest_ozon      # noqa: E402
 import metabase_tests                                   # noqa: E402
 import doors                                            # noqa: E402
@@ -663,9 +663,12 @@ def upload_summary(slug):
 
     logs = []
     try:
-        ingest_result = ingest_summary([dest], cabinet, log=logs.append, database=g.project["slug"])
+        ingest_result = ingest_summary([dest], cabinet, log=logs.append, database=g.project["slug"],
+                                       user_id=current_user.id, project=g.project["slug"])
         client = get_client(database=g.project["slug"])
         reconcile_rows = run_reconciliation(client, cabinet, log=logs.append)
+    except UploadRejected as e:
+        return render_rejected(slug, e, logs)
     except Exception as e:
         return render_template(
             "summary_result.html", error=upload_failed(e, slug), ingest_rows=0, total=0, failed=0,
@@ -685,6 +688,7 @@ def upload_summary(slug):
     return render_template(
         "summary_result.html",
         error=None,
+        notes=[r for o in ingest_result.get("outcomes", []) for r in o["results"]],
         ingest_rows=ingest_result["rows"],
         total=len(rows_as_dicts),
         failed=len(failures),

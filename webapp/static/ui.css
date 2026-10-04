@@ -44,6 +44,8 @@
 
 /* ---------- Двери ---------- */
 .door-unavailable { opacity: .5; }
+/* переключатель кабинета подсвечивается, когда без него нельзя отправить форму двери */
+.ui-select--attention .ui-select__button { border-color: var(--color-danger, #ef4444); }
 .door-section-title { display: flex; align-items: baseline; gap: .75rem; margin-top: 2rem; }
 .door-section-title p { font-size: .875rem; color: var(--color-secondary, #888); margin: 0; }
 

@@ -13,22 +13,26 @@
   {% if door.disabled %}
     <p class="text-xs text-secondary mt-1">{{ door.disabled_reason }}</p>
   {% else %}
-    <form action="{{ door.action }}" method="post" enctype="multipart/form-data" class="mt-4">
+    <form action="{{ door.action }}" method="post" enctype="multipart/form-data" class="mt-4" data-door-form>
       {% if door.needs_cabinet %}<input type="hidden" name="cabinet" data-cabinet-mirror>{% endif %}
       <div>
         <label for="{{ door.input_id }}" class="text-sm font-semibold">Файлы ({{ door.accept }})</label>
-        <input type="file" id="{{ door.input_id }}" name="{{ door.input_name }}" accept="{{ door.accept }}"
+        <input type="file" id="{{ door.input_id }}" name="{{ door.input_name }}" accept="{{ door.accept }}" data-door-file
                {% if door.multiple %}multiple{% endif %} required
                class="block w-full mt-2 text-sm text-secondary
                       file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
                       file:bg-accent file:text-white file:font-medium file:cursor-pointer
                       hover:file:bg-accent-hover">
       </div>
-      <button type="submit" {% if door.needs_cabinet %}disabled data-needs-cabinet{% endif %}
-              class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed">
+      {# Кнопка НЕ блокируется: заблокированная кнопка молча «ничего не делала» (пятница 2026-10-02 —
+         запроса на сервер не было вовсе). Теперь при нажатии без кабинета / с файлом не того типа
+         shell.js показывает понятное сообщение ниже. #}
+      <button type="submit" {% if door.needs_cabinet %}data-needs-cabinet{% endif %}
+              class="mt-6 bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150">
         Загрузить
       </button>
       {% if door.needs_cabinet %}<p class="text-xs text-secondary mt-2" data-cabinet-hint>Сначала выберите кабинет.</p>{% endif %}
+      <p class="text-sm text-danger font-medium mt-2" role="alert" data-door-message hidden></p>
     </form>
   {% endif %}
 </div>
