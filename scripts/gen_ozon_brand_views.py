@@ -279,11 +279,13 @@ SELECT
     month                    AS month,
     brand                    AS brand,
     pfg                      AS payable_for_goods,
+    share                    AS share,
     {out_alloc},
     pfg + ({parts}) * share AS payable_total
 FROM parts
 ORDER BY cabinet, brand, month;
 
+ALTER TABLE ozon_metrics_by_cabinet_brand_month_cashflow_api COMMENT COLUMN share 'Доля бренда в расходах кабинета за месяц = max(выручка бренда, 0) / сумма таких по кабинету; 1, если реализации или выручки нет. Нужна детальному адаптеру, чтобы раскладывать отдельные статьи cash-flow тем же способом.';
 ALTER TABLE ozon_metrics_by_cabinet_brand_month_cashflow_api COMMENT COLUMN brand 'Бренд по каталогу Ozon. «К перечислению за товар» — точно из реализации по бренду; логистика, последняя миля, штрафы, доплаты, хранение, продвижение, прочие начисления и нераспознанное — расходы кабинета, разложенные пропорционально выручке бренда за месяц (оценка; продвижение планируется перевести на поартикульные данные). Нет реализации — всё на название кабинета.';
 """
 
