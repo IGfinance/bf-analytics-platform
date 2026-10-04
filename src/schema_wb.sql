@@ -94,6 +94,9 @@ CREATE TABLE IF NOT EXISTS wb_reports
     social_certificate_payment               Nullable(Float64),
     agent_vat_withholding                    Nullable(Float64),  -- «Удержание Агентского НДС»: неактивная, в метриках не используется
     logistics_coefficient                    Nullable(Float64),  -- «Коэффициент логистики»: неактивная, в метриках не используется
+    buyer_kpp                                Nullable(String),   -- «КПП покупателя-юрлица»: неактивная (пустая во всех файлах)
+    upd_number                               Nullable(String),   -- «Номер УПД или УКД»: неактивная
+    upd_date                                 Nullable(String),   -- «Дата УПД или УКД»: неактивная, формат неизвестен
     extra_columns  Map(String, String),  -- значения колонок, которых нет в маппинге
     source_file    String,
     loaded_at      DateTime DEFAULT now()
@@ -126,3 +129,6 @@ ORDER BY (seen_at);
 --   ALTER TABLE wb_reports UPDATE logistics_coefficient = toFloat64OrNull(extra_columns['Коэффициент логистики']),
 --       extra_columns = mapFilter((k, v) -> k != 'Коэффициент логистики', extra_columns)
 --   WHERE mapContains(extra_columns, 'Коэффициент логистики');
+
+-- Миграция 2026-10-04 (боевая БД): колонки УПД/КПП (новые в выгрузках WB, пока пустые):
+--   ALTER TABLE wb_reports ADD COLUMN IF NOT EXISTS buyer_kpp Nullable(String), ADD COLUMN IF NOT EXISTS upd_number Nullable(String), ADD COLUMN IF NOT EXISTS upd_date Nullable(String);
