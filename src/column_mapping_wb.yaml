@@ -66,6 +66,7 @@ columns:
     aliases:
       - "Виды логистики, штрафов и корректировок ВВ"
       - "Виды логистики, штрафов и доплат"   # старое название (до переименования WB)
+      - "Виды доставок, штрафов и корректировок ВВ"   # новое название WB (осень 2026)
   marketplace_sticker:             { type: String,   aliases: ["Стикер МП"] }
   acquiring_bank_name:             { type: String,   aliases: ["Наименование банка-эквайера"] }
   office_number:                   { type: String,   aliases: ["Номер офиса"] }
@@ -80,7 +81,7 @@ columns:
   marking_code:                    { type: String,   aliases: ["Код маркировки"] }
   sku_barcode:                     { type: String,   aliases: ["ШК"] }
   srid:                            { type: String,   aliases: ["Srid"] }
-  transport_warehouse_compensation: { type: Float64,  aliases: ["Возмещение издержек по перевозке/по складским операциям с товаром"] }
+  transport_warehouse_compensation: { type: Float64,  aliases: ["Возмещение издержек по перевозке/по складским операциям с товаром", "Возмещение издержек по перемещению и операционной обработке товара"] }   # второе — новое название WB (осень 2026)
   transport_organizer:             { type: String,   aliases: ["Организатор перевозки"] }
   storage_cost:                    { type: Float64,  aliases: ["Хранение"] }
   deductions:                      { type: Float64,  aliases: ["Удержания"] }
@@ -114,4 +115,4 @@ columns:
   agent_vat_withholding:           { type: Float64, optional: true,  aliases: ["Удержание Агентского НДС"] }
   # Неактивная колонка (решение владельца 2026-10-02): хранится, в метриках не используется.
   # Появилась в 2 файлах CloudSix; это коэффициент, не денежная сумма.
-  logistics_coefficient:           { type: Float64, optional: true,  aliases: ["Коэффициент логистики"] }
+  logistics_coefficient:           { type: Float64, optional: true,  aliases: ["Коэффициент логистики", "Коэффициент доставки"] }
