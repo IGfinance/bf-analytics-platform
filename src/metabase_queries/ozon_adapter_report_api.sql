@@ -53,9 +53,17 @@
 -- карточках проекта: dimension-таргет на native SQL молча перестаёт
 -- фильтровать (гочтя из .claude/knowledge/architecture-standarts.md).
 
+-- ПРАВКА 2026-10-04: добавлен столбец «Бренд» после «Кабинета» (карточка 203). Бренд — из каталога Ozon
+-- (ozon_products, атрибут «Бренд») по артикулу; пустой и «Нет бренда» = название кабинета, CloudSix = «Cloud Six».
+-- Строка = кабинет × бренд × месяц. Привязанное к артикулу лежит на бренде ТОЧНО; расходы кабинета (строки
+-- без артикула) РАЗЛОЖЕНЫ по брендам пропорционально выручке бренда за месяц — это оценка, а не данные Ozon.
+-- Сумма по брендам = прежняя строка кабинета (проверено на данных). Вьюхи: scripts/gen_ozon_brand_views.py.
+-- Карточка читает ozon_metrics_by_cabinet_brand_month_cashflow_api (cash-flow по брендам) и
+-- ozon_realization_by_cabinet_brand_month; «07 К перечислению за товар» по брендам — точно из реализации.
 SELECT
     c.month                                   AS "Месяц",
     c.cabinet                                 AS "Кабинет",
+    c.brand                                   AS "Бренд",
     'Ozon'                                    AS "Площадка",
     if(r.has_real = 1, toNullable(r.sales_qty), NULL)           AS "01 Кол-во продаж",
     if(r.has_real = 1, toNullable(r.sales_with_spp), NULL)      AS "02 Выручка + СПП",
@@ -77,34 +85,12 @@ SELECT
     toFloat64(c.unmapped)                       AS "Не разнесено по статьям",
     if(r.has_real = 1, toNullable(r.cogs_qty_covered), NULL)       AS "Ед. с себестоимостью",
     if(r.has_real = 1, toNullable(r.cogs_qty_uncovered), NULL)     AS "Ед. без себестоимости"
-FROM ozon_metrics_by_cabinet_month_cashflow_api AS c
-LEFT JOIN (SELECT cabinet, month, 1 AS has_real, sales_qty, sales_with_spp,
+FROM ozon_metrics_by_cabinet_brand_month_cashflow_api AS c
+LEFT JOIN (SELECT cabinet, month, brand, 1 AS has_real, sales_qty, sales_with_spp,
                   sales_amount, spp_amount, commission, returns_corrections,
                   cogs, cogs_qty_covered, cogs_qty_uncovered
-           FROM ozon_realization_by_cabinet_month) AS r
-       ON r.cabinet = c.cabinet AND r.month = c.month
+           FROM ozon_realization_by_cabinet_brand_month) AS r
+       ON r.cabinet = c.cabinet AND r.month = c.month AND r.brand = c.brand
 WHERE 1 = 1
 [[AND c.cabinet = {{cabinet}}]]
-ORDER BY c.month, c.cabinet
-
--- ПРОВЕРКА НА ДАННЫХ 2026-09-28, против отчёта на ручной выгрузке
--- (ozon_metrics_by_cabinet_month), общие кабинет-месяцы:
---   январь-май: "07 К перечислению за товар" сходится В НОЛЬ у всех
---     кабинетов (CloudSix, Isonic, Lampa, NoxLab, Torado); логистика,
---     хранение и продвижение тоже ноль или единицы рублей;
---   расходится только "09 Последняя миля" — от 168 ₽ до 88 тыс ₽/мес.
---     Это ровно тот известный пробел покрытия, что описан выше, а не новая
---     проблема;
---   июнь расходится по всем строкам, потому что .xlsx там обрывается на
---     16-м числе, а API отдал месяц целиком — то есть API полнее.
---
--- КАБИНЕТЫ У ИСТОЧНИКОВ РАЗНЫЕ, это видно сразу при открытии:
---   только в API:  CloudNew, HomeMaster
---   только в .xlsx: MaxJansen
---   у X-Tech в API один месяц против шести в .xlsx
--- Поэтому отчёты дополняют друг друга, и ни один не отменяет второй.
---
--- ОСТОРОЖНО с месяцем: у ozon_metrics_by_cabinet_month_cashflow_api колонка
--- month имеет тип Date (без приёма «12:00», который стоит у остальных вьюх
--- проекта). При сравнении с ними нужен toDate() с той стороны, иначе JOIN
--- молча не находит ни строки — так и случилось при первой сверке.
+ORDER BY c.month, c.cabinet, c.brand

@@ -57,12 +57,19 @@ API_SOURCE_TABLE = "wb_api_realization_as_reports"
 #   * кабинет CloudSix везде называется «Cloud Six» — так бренд пишет сам WB
 #     (в названии кабинета нет пробела, в данных он есть);
 #   * остальные бренды — как в отчёте (NoxLab в Hauser, Ostile в Lampa …).
-def brand_expr(cab: str, brand: str) -> str:
-    cab_name = f"if({cab} = 'CloudSix', 'Cloud Six', {cab})"
+def cab_name_expr(cab: str) -> str:
+    """Название кабинета как бренд: CloudSix везде «Cloud Six»."""
+    return f"if({cab} = 'CloudSix', 'Cloud Six', {cab})"
+
+
+def brand_expr(cab: str, brand: str, extra_blank: tuple = ()) -> str:
+    """extra_blank — дополнительные «пустые» значения бренда (у Ozon «нет бренда»,
+    справочное значение площадки)."""
     b = f"trim(coalesce({brand}, ''))"
     lb = f"lowerUTF8({b})"
-    return (f"if({lb} = '' OR {lb} = 'неопознанный товар' OR {lb} = lowerUTF8({cab}), "
-            f"{cab_name}, {b})")
+    blanks = " OR ".join([f"{lb} = ''", f"{lb} = 'неопознанный товар'"]
+                         + [f"{lb} = '{x}'" for x in extra_blank])
+    return f"if({blanks} OR {lb} = lowerUTF8({cab}), {cab_name_expr(cab)}, {b})"
 
 
 HEADER = f"""-- СГЕНЕРИРОВАННЫЙ ФАЙЛ. Не правьте руками.
