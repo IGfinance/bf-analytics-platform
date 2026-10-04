@@ -19,9 +19,16 @@
 -- Hauser/INOVO/Lampa/Torado — это и было главной причиной расхождений во
 -- внешней сверке. Здесь это видно как обрыв последних месяцев.
 
+-- ПРАВКА 2026-10-04: добавлен столбец «Бренд» после «Кабинета» (карточка 204). Источник —
+-- wb_metrics_by_cabinet_brand_month: кабинет × бренд × месяц, бренд — строка отчёта; пустой и «Неопознанный Товар» = название кабинета,
+-- CloudSix везде «Cloud Six» (как пишет WB), TORADO у кабинета Torado — в написании кабинета; без
+-- перераспределения по артикулу. Сумма по брендам = прежняя строка кабинета (проверено
+-- на данных, расхождение 0). Вьюхи генерирует scripts/gen_wb_metrics_brand_views.py.
+
 SELECT
     month                                                  AS "Месяц",
     cabinet                                                 AS "Кабинет",
+    brand                                                   AS "Бренд",
     'WB'                                                     AS "Площадка",
     toFloat64(sales_qty)                                      AS "01 Кол-во продаж",
     toFloat64(sales_amount + spp_amount)                       AS "02 Продажи + СПП",
@@ -45,7 +52,7 @@ SELECT
     toFloat64(gross_profit)                                                      AS "17 Валовая прибыль",
     toFloat64(cogs_qty_covered)                                                   AS "Ед. с себестоимостью",
     toFloat64(cogs_qty_uncovered)                                                  AS "Ед. без себестоимости"
-FROM wb_metrics_by_cabinet_month
+FROM wb_metrics_by_cabinet_brand_month
 WHERE 1 = 1
 [[AND cabinet = {{cabinet}}]]
-ORDER BY month, cabinet
+ORDER BY month, cabinet, brand

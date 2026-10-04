@@ -7,8 +7,8 @@
 # лимит 1 запрос/мин ПРИВЯЗАН К ТОКЕНУ (не к IP, см. scripts/backfill_wb_api.py),
 # поэтому кабинеты можно грузить последовательно без взаимной конкуренции за
 # лимит, окно в неделю — 1-2 запроса на кабинет, весь прогон занимает минуты,
-# не часы. CloudNew НЕ в списке — токен отозван (см. вики, secrets/cabinet_api_keys.json
-# проверить перед тем как возвращать).
+# не часы. CloudNew вернулся в список 2026-10-04 (новый токен; история 2026
+# догружена scripts/backfill_wb_api.py).
 #
 # Ozon: /v1/finance/cash-flow-statement/list запрашивается ПО МЕСЯЦУ (не по дню,
 # см. src/ozon_cashflow_core.py) — без lookback, поэтому повторный запрос
@@ -19,6 +19,14 @@
 # про X-Tech): не вредит (ReplacingMergeTree, 0 останется 0), но и не чинит
 # сам себя — если ключ починят, кабинет просто начнёт грузиться корректно
 # без правки этого скрипта.
+#
+# Ozon «Отчёт о реализации» (/v2/finance/realization) — источник строк 01-06
+# отчёта для адаптера (кол-во, Выручка+СПП, Выручка, СПП, Комиссия,
+# корректировки) и себестоимости. Ozon отдаёт его только за ЗАКРЫТЫЙ месяц:
+# за текущий — 404 «Report was not found», скрипт это тихо пропускает (не
+# ошибка). До 2026-10-04 эту загрузку не автоматизировали, и сентябрь в отчёте
+# для адаптера был пустым. Прошлый месяц перезаписывается каждый день — ловит
+# поздние правки Ozon. Пауза 5 с вместо 15: лимит у этого метода не упирался.
 #
 # Идемпотентность обеих загрузок — ReplacingMergeTree, повторный прогон того
 # же окна перезаписывает те же строки, а не дублирует (см. docstring каждого
@@ -35,7 +43,7 @@ source venv/bin/activate
 exec 9>/tmp/cloudsix-api-sync.lock
 flock -n 9 || { echo "$(date -Iseconds) — уже выполняется, выхожу"; exit 0; }
 
-WB_CABINETS="ARB CloudSix Feel Hauser INOVO Lampa NoxLab Torado"
+WB_CABINETS="ARB CloudNew CloudSix Feel Hauser INOVO Lampa NoxLab Torado"
 DATE_TO=$(date +%Y-%m-%d)
 DATE_FROM=$(date -d '7 days ago' +%Y-%m-%d)
 
@@ -51,5 +59,16 @@ MONTH_TO=$(date +%Y-%m)
 echo "=== $(date -Iseconds) — Ozon cash-flow-statement, $MONTH_FROM..$MONTH_TO, все кабинеты ==="
 python3 src/ingest_ozon_cashflow.py --all-cabinets --from "$MONTH_FROM" --to "$MONTH_TO" \
     || echo "ОШИБКА: Ozon cash-flow упал, см. вывод выше"
+
+echo "=== $(date -Iseconds) — Ozon реализация, $MONTH_FROM..$MONTH_TO, все кабинеты ==="
+python3 src/ingest_ozon_realization.py --all-cabinets --from "$MONTH_FROM" --to "$MONTH_TO" --delay 5 \
+    || echo "ОШИБКА: Ozon реализация упала, см. вывод выше"
+
+# Каталог товаров Ozon с брендами (ozon_products): нужен столбцу «Бренд» в адаптерах Ozon.
+# Бренд — атрибут карточки, в отчётах Ozon его нет; появляются новые товары и бренды, поэтому
+# обновляем ежедневно. Включает архивные товары (visibility=ALL их не отдаёт).
+echo "=== $(date -Iseconds) — Ozon каталог товаров (бренды), все кабинеты ==="
+python3 src/ingest_ozon_products.py --all-cabinets \
+    || echo "ОШИБКА: Ozon каталог товаров упал, см. вывод выше"
 
 echo "=== $(date -Iseconds) — готово ==="
