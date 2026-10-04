@@ -327,6 +327,23 @@ def test_logistics_coefficient_column_is_optional_float_and_not_extra(tmp_path, 
     assert stored["logistics_coefficient"] == 10.5 and "Коэффициент логистики" not in stored["extra_columns"]
 
 
+def test_wb_renamed_columns_autumn_2026_are_recognised():
+    """WB переименовал колонки (осень 2026): новые заголовки должны попадать в те же поля, а УПД/КПП — быть необязательными."""
+    alias_to_canonical, _ = wb_core.load_mapping()
+    for header, canonical in {
+        "Возмещение издержек по перемещению и операционной обработке товара": "transport_warehouse_compensation",
+        "Виды доставок, штрафов и корректировок ВВ": "logistics_fines_corrections_type",
+        "Коэффициент доставки": "logistics_coefficient",
+        "КПП покупателя-юрлица": "buyer_kpp",
+        "Номер УПД или УКД": "upd_number",
+        "Дата УПД или УКД": "upd_date",
+    }.items():
+        assert alias_to_canonical[core.normalize_header(header)] == canonical
+    specs = core.load_column_specs(wb_core.MAPPING_PATH)
+    for name in ("buyer_kpp", "upd_number", "upd_date"):
+        assert specs[name] == {"type": "String", "optional": True}
+
+
 def test_report_already_loaded_under_other_cabinet_is_rejected(tmp_path, client):
     f = tmp_path / "Отчёт №888_1.xlsx"
     _write_xlsx(f, wb_core, 0)
