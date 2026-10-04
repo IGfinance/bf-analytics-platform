@@ -79,7 +79,12 @@ def parse_weeks(header_nums, header_begin, header_end) -> list:
     return weeks
 
 
-def parse_file(path, sheet_name: str = DEFAULT_SHEET) -> list:
+def analyze_file(path, sheet_name: str = DEFAULT_SHEET):
+    """Разбор файла + статистика для проверок загрузки: (строки, stats).
+
+    stats: weeks [(label, begin, end)], skus, duplicate_skus [..], bad_cells [(sku, begin, value)] —
+    непустые ячейки, не являющиеся числом, blank_cells — пустые ячейки, negative [(sku, begin, value)],
+    zero — число нулевых значений. Ошибки структуры файла — ValueError с русским текстом."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"файл не найден: {path}")
@@ -103,8 +108,9 @@ def parse_file(path, sheet_name: str = DEFAULT_SHEET) -> list:
     logger.info("Недель в файле: %d (%s..%s)", len(weeks), weeks[0][2], weeks[-1][3])
 
     out = []
-    skus_seen = set()
-    skipped_cells = 0
+    skus_seen, duplicate_skus = set(), []
+    stats = {"weeks": [(w[1], w[2], w[3]) for w in weeks], "duplicate_skus": duplicate_skus,
+             "bad_cells": [], "blank_cells": 0, "negative": [], "zero": 0}
     for row in rows[3:]:
         raw_sku = row[0] if row else None
         if raw_sku is None or not str(raw_sku).strip():
@@ -112,28 +118,38 @@ def parse_file(path, sheet_name: str = DEFAULT_SHEET) -> list:
         sku_source = str(raw_sku).strip()
         sku = sku_source.lower()
         if sku in skus_seen:
+            duplicate_skus.append(sku_source)
             logger.warning("Артикул %r встречается в файле повторно — строки будут схлопнуты в ReplacingMergeTree", sku_source)
         skus_seen.add(sku)
 
         for col, label, begin, end in weeks:
             value = row[col] if col < len(row) else None
             if value is None or value == "":
-                skipped_cells += 1
+                stats["blank_cells"] += 1
                 continue
             try:
                 unit_cost = float(value)
             except (TypeError, ValueError):
                 logger.warning("Артикул %r, неделя %s: значение %r не число — строка пропущена",
                                sku_source, begin, value)
-                skipped_cells += 1
+                stats["bad_cells"].append((sku_source, begin, value))
                 continue
+            if unit_cost < 0:
+                stats["negative"].append((sku_source, begin, unit_cost))
+            elif unit_cost == 0:
+                stats["zero"] += 1
             out.append([sku, begin, end, label, unit_cost, sku_source, path.name])
 
-    logger.info("Артикулов: %d, строк к загрузке: %d, пустых/некорректных ячеек пропущено: %d",
-                len(skus_seen), len(out), skipped_cells)
+    stats["skus"] = len(skus_seen)
+    logger.info("Артикулов: %d, строк к загрузке: %d, пустых ячеек: %d, нечисловых: %d",
+                len(skus_seen), len(out), stats["blank_cells"], len(stats["bad_cells"]))
     if not out:
         raise ValueError("в файле не нашлось ни одной строки себестоимости")
-    return out
+    return out, stats
+
+
+def parse_file(path, sheet_name: str = DEFAULT_SHEET) -> list:
+    return analyze_file(path, sheet_name)[0]
 
 
 def ingest_file(path, sheet_name: str = DEFAULT_SHEET, client=None) -> dict:

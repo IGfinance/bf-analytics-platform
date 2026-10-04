@@ -50,13 +50,13 @@ def text(html):
 # ----------------------------------------------------------------- модель дверей
 
 def test_doors_state_standard_first_and_classification():
-    state = doors.doors_state({"wb", "ozon"}, {"bank_1c", "card_pdf", "klientiks"})
+    state = doors.doors_state({"wb", "ozon"}, {"bank_1c", "card_pdf", "klientiks", "cogs_weekly"})
     kinds = [d["kind"] for d in state]
     assert kinds == sorted(kinds, key=lambda k: 0 if k == doors.STANDARD else 1)
     by = {d["key"]: d for d in state}
     assert (by["wb_detail"]["kind"] == by["ozon_accruals"]["kind"] == by["bank_1c"]["kind"]
             == by["card_pdf"]["kind"] == doors.STANDARD)
-    assert by["klientiks"]["kind"] == doors.CUSTOM
+    assert by["klientiks"]["kind"] == by["cogs_weekly"]["kind"] == doors.CUSTOM
     assert all(d["active"] for d in state)
 
 
@@ -104,10 +104,11 @@ def test_project_switcher_links_to_same_section_of_other_project(client):
     assert 'data-href="/p/realt/upload"' in html or re.search(r'data-href="[^"]*/p/realt/upload"', html)
 
 
-def test_cabinet_doors_start_disabled_until_cabinet_chosen(client):
+def test_cabinet_doors_explain_that_cabinet_is_detected_from_the_file(client):
     html = page(client, "/p/cloudsix/upload")
     assert html.count("data-needs-cabinet") >= 3             # WB detail, WB summary, Ozon
-    assert "Сначала выберите кабинет." in html
+    assert "Кабинет определится по файлу сам" in html          # раньше «Сначала выберите кабинет» + disabled-кнопка
+    assert html.count("data-detect-url") >= 3                    # у каждой кабинетной двери есть адрес автоопределения
     assert not re.search(r"<select", html)                   # нативных select на странице нет
 
 

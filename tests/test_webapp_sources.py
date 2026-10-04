@@ -26,7 +26,7 @@ import app as webapp  # noqa: E402
 
 def test_supported_sources_only_implemented():
     assert webapp.SUPPORTED_SOURCES == {
-        "bank_1c", "card_pdf", "klientiks",
+        "bank_1c", "card_pdf", "klientiks", "cogs_weekly",
     }
 
 

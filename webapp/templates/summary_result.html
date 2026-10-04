@@ -5,12 +5,20 @@
 {% block content %}
   <h1 class="text-2xl font-bold font-montserrat">Результат загрузки и сверки</h1>
 
+  {% if cabinet_note %}<p class="mt-2 text-sm text-secondary">{{ cabinet_note }}</p>{% endif %}
   {% if error %}
     <p class="mt-4 text-sm text-danger">Ошибка: {{ error }}</p>
   {% else %}
     <p class="mt-4 text-sm text-success-text">
       Загружено строк в wb_report_summary: {{ ingest_rows }}
     </p>
+    {% if notes %}{% set results = notes %}{% include "partials/check_results.html" %}{% endif %}
+    {% if total == 0 %}
+      <p class="mt-2 text-sm text-warning">
+        Сверка не выполнена: в базе нет детальных отчётов с номерами из этой сводки. Загрузите детальные отчёты
+        «Детальный отчёт WB» и повторите.
+      </p>
+    {% endif %}
     <p class="mt-2 text-sm">
       Проверок: <span class="font-semibold">{{ total }}</span>
       &nbsp;|&nbsp;

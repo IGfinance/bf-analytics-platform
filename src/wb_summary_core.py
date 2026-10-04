@@ -154,11 +154,16 @@ def ingest_files(files: list[Path], cabinet: str, log=print, database: str | Non
     all_rows = []
     for path in files:
         rows = process_file(path, cabinet, log=log)
-        all_rows.extend(rows)
+        # Строка без номера отчёта — не отчёт (итоговая строка, мусор из чужого файла); report_number
+        # в таблице UInt64 без NULL, такая вставка либо упала бы, либо записала бы строку-пустышку.
+        valid = [r for r in rows if r.get("report_number") is not None]
+        if len(valid) < len(rows):
+            log(f"    Пропущено строк без номера отчёта: {len(rows) - len(valid)}")
+        all_rows.extend(valid)
 
     if not all_rows:
-        log("Нет строк для загрузки.")
-        return {"files": len(files), "rows": 0}
+        raise ValueError("В файле нет ни одной строки с номером отчёта — это точно «Еженедельный "
+                         "сводный отчёт» WB? Ничего не загружено.")
 
     client = get_client(database=database)
     data = [[row.get(col) for col in INSERT_COLUMNS] for row in all_rows]

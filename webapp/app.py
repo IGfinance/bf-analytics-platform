@@ -41,7 +41,7 @@ import re
 import sys
 from pathlib import Path
 
-from flask import Flask, abort, g, redirect, render_template, request, session, url_for
+from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
 WEBAPP_DIR = Path(__file__).parent
@@ -66,13 +66,15 @@ _load_env(WEBAPP_DIR / ".env")   # прод: всё, что нужно серв�
 _load_env(ROOT_DIR / ".env")     # локальная разработка: общий .env репозитория
 
 from wb_core import ingest_files, get_client          # noqa: E402
-from wb_summary_core import ingest_files as ingest_summary  # noqa: E402
+from upload_checks.summary import ingest as ingest_summary  # noqa: E402   (проверки → запись)
 from ozon_core import ingest_files as ingest_ozon      # noqa: E402
 import metabase_tests                                   # noqa: E402
 import doors                                            # noqa: E402
 from doors import (ALL_PLATFORMS, SUPPORTED_PLATFORMS, SOURCE_META,  # noqa: E402
                    SUPPORTED_SOURCES, STANDARD, CUSTOM)
 from upload_checks.core import UploadRejected, check_cabinet, has_errors  # noqa: E402
+from upload_checks.detect import ClickHouseKnowledge, detect as detect_file_cabinet  # noqa: E402
+from upload_checks.cogs import ingest as ingest_cogs  # noqa: E402
 from bank_statement_1c import ingest_files as ingest_bank   # noqa: E402
 from card_statement_pdf import ingest_files as ingest_card  # noqa: E402
 from klientiks_core import ingest_files as ingest_klientiks  # noqa: E402
@@ -306,6 +308,62 @@ def reject_unknown_cabinet(slug: str, cabinet: str, platform: str):
     ), 400
 
 
+# Двери кабинетные → (вид файла для автоопределения, площадка). Кабинет определяется по самому файлу
+# (upload_checks/detect.py): номер отчёта / код номенклатуры / SKU уже есть в БД проекта.
+DETECT_DOORS = {"wb_detail": ("wb_detail", "wb"), "wb_summary": ("wb_summary", "wb"), "ozon_accruals": ("ozon", "ozon")}
+
+
+def detect_file_cabinets(door_key: str, paths: list) -> list:
+    """[(имя файла, Detection)] — по кабинетам ЭТОГО проекта. Сбой БД → «не определено», не ошибка."""
+    kind, platform = DETECT_DOORS[door_key]
+    allowed = get_project_cabinets(g.project["id"], g.project["slug"], platform)
+    try:
+        knowledge = ClickHouseKnowledge(get_client(database=g.project["slug"]))
+    except Exception:
+        log.exception("Автоопределение кабинета: нет подключения к БД")
+        from upload_checks.detect import Detection
+        return [(Path(p).name, Detection(None, "нет связи с базой")) for p in paths]
+    return [(Path(p).name, detect_file_cabinet(kind, Path(p), knowledge, allowed)) for p in paths]
+
+
+def resolve_cabinet(slug: str, door_key: str, chosen: str, paths: list):
+    """Кабинет загрузки: (cabinet, note, error_response).
+
+    * кабинет выбран вручную — он проверяется (из проекта, на этой площадке) и сверяется с файлом: если
+      файл уверенно принадлежит ДРУГОМУ кабинету, загрузка отклоняется (данные осели бы не туда);
+    * кабинет не выбран — берётся определённый по файлу (все файлы должны указывать на один кабинет),
+      если определить нельзя — понятная просьба выбрать вручную."""
+    platform = DETECT_DOORS[door_key][1]
+    if chosen:
+        rejected = reject_unknown_cabinet(slug, chosen, platform)
+        if rejected:
+            return None, None, rejected
+    found = detect_file_cabinets(door_key, paths)
+
+    def form_error(text):
+        return render_template("upload_form.html", **upload_form_context(g.project["id"], slug, text)), 400
+
+    if chosen:
+        for name, d in found:
+            if d.cabinet and d.cabinet != chosen:
+                return None, None, form_error(
+                    f"Файл «{name}» относится к кабинету «{d.cabinet}» ({d.reason}), а выбран «{chosen}». "
+                    "Выберите правильный кабинет — файл не загружен.")
+        return chosen, None, None
+
+    cabinets = {d.cabinet for _, d in found}
+    if None in cabinets or len(cabinets) != 1:
+        if None not in cabinets:
+            names = "; ".join(f"«{n}» → {d.cabinet}" for n, d in found)
+            return None, None, form_error(f"Файлы относятся к разным кабинетам ({names}). Загрузите их по отдельности.")
+        bad = ", ".join(f"«{n}»" for n, d in found if d.cabinet is None)
+        return None, None, form_error(
+            f"Не удалось определить кабинет по файлу: {bad}. Выберите кабинет вручную — переключатель "
+            "«Кабинет» справа вверху страницы.")
+    cabinet, reason = found[0][1].cabinet, found[0][1].reason
+    return cabinet, f"Кабинет определён автоматически: «{cabinet}» — {reason}.", None
+
+
 def render_rejected(slug: str, exc: UploadRejected, logs: list):
     """Файл отклонён проверками до записи: 400 и список причин, в базе ничего нет."""
     return render_template(
@@ -524,6 +582,7 @@ def build_doors(project_id: int, slug: str, platforms: list) -> dict:
             "action": url_for(d["endpoint"], slug=slug), "input_id": d["input_id"],
             "input_name": d["input_name"], "multiple": d["multiple"], "accept": ".xlsx",
             "needs_cabinet": True, "platform": d["platform"],
+            "detect_url": url_for("detect_cabinet", slug=slug, door_key=d["key"]),
             "disabled": d["platform"] not in platforms,
             "disabled_reason": f"У проекта нет кабинетов {PLATFORM_SHORT.get(d['platform'], d['platform'])}.",
         })
@@ -574,6 +633,38 @@ def upload_page(slug):
     return render_template("upload_form.html", **upload_form_context(g.project["id"], slug))
 
 
+@app.route("/p/<slug>/upload/detect/<door_key>", methods=["POST"])
+@login_required
+@project_access_required
+def detect_cabinet(slug, door_key):
+    """Подсказка для страницы загрузки: по прикреплённому файлу (файлам) определить кабинет.
+    Ничего не пишет в БД; кабинеты только текущего проекта. Ответ: {"cabinet": str|None, "message": str}."""
+    if door_key not in DETECT_DOORS:
+        abort(404)
+    files = request.files.getlist("files") + request.files.getlist("file")
+    saved = []
+    try:
+        for f in files:
+            name = safe_filename(f.filename or "")
+            if name.lower().endswith(".xlsx"):
+                dest = upload_dest(name)
+                f.save(dest)
+                saved.append(dest)
+        if not saved:
+            return jsonify({"cabinet": None, "message": "Нужен файл .xlsx."})
+        found = detect_file_cabinets(door_key, saved)
+    finally:
+        for p in saved:
+            discard_upload(p)
+    cabinets = {d.cabinet for _, d in found}
+    if len(cabinets) == 1 and None not in cabinets:
+        d = found[0][1]
+        return jsonify({"cabinet": d.cabinet, "message": d.reason})
+    if None not in cabinets:
+        return jsonify({"cabinet": None, "message": "Файлы относятся к разным кабинетам — загрузите их по отдельности."})
+    return jsonify({"cabinet": None, "message": "Кабинет по файлу определить не удалось."})
+
+
 @app.route("/p/<slug>/upload/detail", methods=["POST"])
 @login_required
 @project_access_required
@@ -581,13 +672,6 @@ def upload_detail(slug):
     cabinet = request.form.get("cabinet", "").strip()
     files = request.files.getlist("files")
 
-    if not cabinet:
-        return render_template(
-            "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
-        ), 400
-    rejected = reject_unknown_cabinet(slug, cabinet, "wb")
-    if rejected:
-        return rejected
     if not files or all(f.filename == "" for f in files):
         return render_template(
             "upload_form.html",
@@ -610,7 +694,15 @@ def upload_detail(slug):
             **upload_form_context(g.project["id"], slug, "Ни одного .xlsx файла не найдено"),
         ), 400
 
+    cabinet, cabinet_note, err = resolve_cabinet(slug, "wb_detail", cabinet, saved_paths)
+    if err:
+        for p in saved_paths:
+            discard_upload(p)
+        return err
+
     logs = []
+    if cabinet_note:
+        logs.append(cabinet_note)
     if skipped:
         logs.append(f"Пропущены не-xlsx файлы: {', '.join(skipped)}")
 
@@ -628,7 +720,7 @@ def upload_detail(slug):
             discard_upload(p)
 
     return render_template(
-        "detail_result.html", error=None, summary=summary, logs=logs, slug=slug,
+        "detail_result.html", error=None, summary=summary, logs=logs, slug=slug, cabinet_note=cabinet_note,
     )
 
 
@@ -639,13 +731,6 @@ def upload_summary(slug):
     cabinet = request.form.get("cabinet", "").strip()
     f = request.files.get("file")
 
-    if not cabinet:
-        return render_template(
-            "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
-        ), 400
-    rejected = reject_unknown_cabinet(slug, cabinet, "wb")
-    if rejected:
-        return rejected
     if not f or f.filename == "":
         return render_template(
             "upload_form.html", **upload_form_context(g.project["id"], slug, "Выберите файл"),
@@ -661,11 +746,19 @@ def upload_summary(slug):
     dest = upload_dest(filename)
     f.save(dest)
 
-    logs = []
+    cabinet, cabinet_note, err = resolve_cabinet(slug, "wb_summary", cabinet, [dest])
+    if err:
+        discard_upload(dest)
+        return err
+
+    logs = [cabinet_note] if cabinet_note else []
     try:
-        ingest_result = ingest_summary([dest], cabinet, log=logs.append, database=g.project["slug"])
+        ingest_result = ingest_summary([dest], cabinet, log=logs.append, database=g.project["slug"],
+                                       user_id=current_user.id, project=g.project["slug"])
         client = get_client(database=g.project["slug"])
         reconcile_rows = run_reconciliation(client, cabinet, log=logs.append)
+    except UploadRejected as e:
+        return render_rejected(slug, e, logs)
     except Exception as e:
         return render_template(
             "summary_result.html", error=upload_failed(e, slug), ingest_rows=0, total=0, failed=0,
@@ -685,6 +778,8 @@ def upload_summary(slug):
     return render_template(
         "summary_result.html",
         error=None,
+        cabinet_note=cabinet_note,
+        notes=[r for o in ingest_result.get("outcomes", []) for r in o["results"]],
         ingest_rows=ingest_result["rows"],
         total=len(rows_as_dicts),
         failed=len(failures),
@@ -701,13 +796,6 @@ def upload_ozon(slug):
     cabinet = request.form.get("cabinet", "").strip()
     files = request.files.getlist("files")
 
-    if not cabinet:
-        return render_template(
-            "upload_form.html", **upload_form_context(g.project["id"], slug, "Укажите кабинет"),
-        ), 400
-    rejected = reject_unknown_cabinet(slug, cabinet, "ozon")
-    if rejected:
-        return rejected
     if not files or all(f.filename == "" for f in files):
         return render_template(
             "upload_form.html",
@@ -730,7 +818,15 @@ def upload_ozon(slug):
             **upload_form_context(g.project["id"], slug, "Ни одного .xlsx файла не найдено"),
         ), 400
 
+    cabinet, cabinet_note, err = resolve_cabinet(slug, "ozon_accruals", cabinet, saved_paths)
+    if err:
+        for p in saved_paths:
+            discard_upload(p)
+        return err
+
     logs = []
+    if cabinet_note:
+        logs.append(cabinet_note)
     if skipped:
         logs.append(f"Пропущены не-xlsx файлы: {', '.join(skipped)}")
 
@@ -748,7 +844,7 @@ def upload_ozon(slug):
             discard_upload(p)
 
     return render_template(
-        "detail_result.html", error=None, summary=summary, logs=logs, slug=slug,
+        "detail_result.html", error=None, summary=summary, logs=logs, slug=slug, cabinet_note=cabinet_note,
     )
 
 
@@ -804,6 +900,48 @@ def handle_source_upload(slug: str, ext: str, ingest_fn, source_label: str):
         "source_result.html", error=None, summary=summary, logs=logs,
         slug=slug, source_label=source_label,
     )
+
+
+@app.route("/p/<slug>/upload/cogs", methods=["POST"])
+@login_required
+@project_access_required
+def upload_cogs(slug):
+    """Еженедельная матрица себестоимости (wb_cogs_weekly): проверки → запись только новых и изменённых
+    значений → отчёт о пробелах. Дверь доступна только проекту, у которого источник включён."""
+    if "cogs_weekly" not in get_project_sources(g.project["id"], g.project["slug"]):
+        abort(404)
+    files = request.files.getlist("files")
+    if not files or all(f.filename == "" for f in files):
+        return render_template(
+            "upload_form.html", **upload_form_context(g.project["id"], slug, "Выберите файл"),
+        ), 400
+    saved_paths, skipped = [], []
+    for f in files:
+        filename = safe_filename(f.filename)
+        if not filename.lower().endswith(".xlsx"):
+            skipped.append(f.filename)
+            continue
+        dest = upload_dest(filename)
+        f.save(dest)
+        saved_paths.append(dest)
+    if not saved_paths:
+        return render_template(
+            "upload_form.html", **upload_form_context(g.project["id"], slug, "Ни одного .xlsx файла не найдено"),
+        ), 400
+    logs = [f"Пропущены не-xlsx файлы: {', '.join(skipped)}"] if skipped else []
+    try:
+        summary = ingest_cogs(saved_paths, log_fn=logs.append, database=g.project["slug"],
+                              user_id=current_user.id, project=g.project["slug"])
+    except UploadRejected as e:
+        return render_rejected(slug, e, logs)
+    except Exception as e:
+        return render_template(
+            "detail_result.html", error=upload_failed(e, slug), summary=None, logs=logs, slug=slug,
+        ), 500
+    finally:
+        for p in saved_paths:
+            discard_upload(p)
+    return render_template("detail_result.html", error=None, summary=summary, logs=logs, slug=slug)
 
 
 @app.route("/p/<slug>/upload/bank", methods=["POST"])
