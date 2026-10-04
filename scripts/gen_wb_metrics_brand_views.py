@@ -17,9 +17,9 @@ _api) НЕ меняются: на них стоят Модель 49, SKU-даш�
     wb_metrics_by_sku_brand_month        / _api   — кабинет × месяц × артикул × бренд
     wb_metrics_by_cabinet_brand_month    / _api   — кабинет × месяц × бренд
 
-ПУСТОЙ БРЕНД — отдельное значение 'Без бренда', без перераспределения по
-артикулу (решение владельца 2026-10-04): честно видно, сколько денег не
-привязано к бренду. Значения бренда берутся как есть из отчёта.
+БРЕНД СТРОКИ — из отчёта, без перераспределения по артикулу (решение
+владельца 2026-10-04). Пустой бренд и «Неопознанный Товар» показываются как
+название кабинета; CloudSix везде «Cloud Six»; подробности — brand_expr().
 
 Себестоимость: cogs_agg группируется по тому же бренду строки, и джойн идёт
 по (cabinet, month, sku, brand) — один-к-одному, как в каноническом файле.
@@ -49,7 +49,21 @@ API_SOURCE_TABLE = "wb_api_realization_as_reports"
 
 # Внутреннее имя — НЕ brand: в ClickHouse псевдоним с именем колонки
 # перекрывает её во всех выражениях того же SELECT (циклический псевдоним).
-BRAND_EXPR = "coalesce(nullIf(trim(brand), ''), 'Без бренда')"
+#
+# ПРАВИЛО БРЕНДА (решение владельца 2026-10-04):
+#   * пустой бренд и «Неопознанный Товар» → название кабинета;
+#   * бренд, совпадающий с названием кабинета без учёта регистра (TORADO у
+#     кабинета Torado) → написание кабинета, иначе рядом встали бы две строки;
+#   * кабинет CloudSix везде называется «Cloud Six» — так бренд пишет сам WB
+#     (в названии кабинета нет пробела, в данных он есть);
+#   * остальные бренды — как в отчёте (NoxLab в Hauser, Ostile в Lampa …).
+def brand_expr(cab: str, brand: str) -> str:
+    cab_name = f"if({cab} = 'CloudSix', 'Cloud Six', {cab})"
+    b = f"trim(coalesce({brand}, ''))"
+    lb = f"lowerUTF8({b})"
+    return (f"if({lb} = '' OR {lb} = 'неопознанный товар' OR {lb} = lowerUTF8({cab}), "
+            f"{cab_name}, {b})")
+
 
 HEADER = f"""-- СГЕНЕРИРОВАННЫЙ ФАЙЛ. Не правьте руками.
 --
@@ -57,8 +71,9 @@ HEADER = f"""-- СГЕНЕРИРОВАННЫЙ ФАЙЛ. Не правьте р�
 -- Генератор: scripts/gen_wb_metrics_brand_views.py
 --
 -- Те же метрики WB, что в канонических вьюхах, с дополнительным измерением
--- «бренд» (строка отчёта: wb_reports.brand для .xlsx, brand у API). Пустой
--- бренд = 'Без бренда', без перераспределения по артикулу. Формула взята из
+-- «бренд» (строка отчёта: wb_reports.brand для .xlsx, brand у API). Пустой бренд
+-- и «Неопознанный Товар» = название кабинета (CloudSix → «Cloud Six»), без
+-- перераспределения по артикулу, см. brand_expr(). Формула взята из
 -- канонических файлов дословно; изменены только группировка и ключ джойна
 -- себестоимости. Канонические вьюхи не затронуты.
 --
@@ -88,12 +103,12 @@ def brand_sku(text: str) -> str:
     out = _sub(out,
                "        cabinet,\n        toDateTime(toStartOfMonth(sale_date)) + INTERVAL 12 HOUR AS month,",
                "        cabinet,\n        toDateTime(toStartOfMonth(sale_date)) + INTERVAL 12 HOUR AS month,\n"
-               f"        {BRAND_EXPR} AS brand_key,", 1)
+               f"        {brand_expr('cabinet', 'brand')} AS brand_key,", 1)
     # cogs_agg: тот же бренд в зерне и во внутреннем подзапросе
     out = _sub(out,
                "        r.cabinet AS cabinet,\n",
                "        r.cabinet AS cabinet,\n"
-               f"        {BRAND_EXPR.replace('brand', 'r.brand')} AS brand_key,\n", 1)
+               f"        {brand_expr('r.cabinet', 'r.brand')} AS brand_key,\n", 1)
     out = _sub(out,
                "        SELECT\n            cabinet,\n            sale_date,\n            supplier_article,",
                "        SELECT\n            cabinet,\n            brand,\n            sale_date,\n            supplier_article,", 1)
@@ -135,8 +150,8 @@ def to_api(text: str) -> str:
 
 def brand_comments(suffix: str) -> str:
     s, c = f"wb_metrics_by_sku_brand_month{suffix}", f"wb_metrics_by_cabinet_brand_month{suffix}"
-    txt = ("Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по "
-           "артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а "
+    txt = ("Бренд строки отчёта (brand); пустой бренд и «Неопознанный Товар» — название кабинета, "
+           "кабинет CloudSix везде «Cloud Six», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а "
            "не из справочника).")
     return (f"\nALTER TABLE {s} COMMENT COLUMN brand '{txt}';\n"
             f"ALTER TABLE {c} COMMENT COLUMN brand '{txt}';\n")

@@ -45,7 +45,7 @@ def test_brand_is_in_grain_and_cogs_join():
     assert "AS brand,\n        coalesce" not in sql
 
 
-def test_blank_brand_is_its_own_value():
+def test_blank_and_unidentified_brand_fall_back_to_cabinet():
     sql = OUT.read_text(encoding="utf-8")
-    assert "'Без бренда'" in sql
+    assert "неопознанный товар" in sql
     assert "FROM wb_reports" in sql and "FROM wb_api_realization_as_reports" in sql

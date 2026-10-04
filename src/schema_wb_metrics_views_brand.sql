@@ -4,8 +4,9 @@
 -- Генератор: scripts/gen_wb_metrics_brand_views.py
 --
 -- Те же метрики WB, что в канонических вьюхах, с дополнительным измерением
--- «бренд» (строка отчёта: wb_reports.brand для .xlsx, brand у API). Пустой
--- бренд = 'Без бренда', без перераспределения по артикулу. Формула взята из
+-- «бренд» (строка отчёта: wb_reports.brand для .xlsx, brand у API). Пустой бренд
+-- и «Неопознанный Товар» = название кабинета (CloudSix → «Cloud Six»), без
+-- перераспределения по артикулу, см. brand_expr(). Формула взята из
 -- канонических файлов дословно; изменены только группировка и ключ джойна
 -- себестоимости. Канонические вьюхи не затронуты.
 --
@@ -31,7 +32,7 @@ base AS (
     SELECT
         cabinet,
         toDateTime(toStartOfMonth(sale_date)) + INTERVAL 12 HOUR AS month,
-        coalesce(nullIf(trim(brand), ''), 'Без бренда') AS brand_key,
+        if(lowerUTF8(trim(coalesce(brand, ''))) = '' OR lowerUTF8(trim(coalesce(brand, ''))) = 'неопознанный товар' OR lowerUTF8(trim(coalesce(brand, ''))) = lowerUTF8(cabinet), if(cabinet = 'CloudSix', 'Cloud Six', cabinet), trim(coalesce(brand, ''))) AS brand_key,
         coalesce(nullIf(trim(supplier_article), ''), 'без артикула') AS sku,
         anyHeavy(product_name) AS product_name,
 
@@ -91,7 +92,7 @@ base AS (
 cogs_agg AS (
     SELECT
         r.cabinet AS cabinet,
-        coalesce(nullIf(trim(r.brand), ''), 'Без бренда') AS brand_key,
+        if(lowerUTF8(trim(coalesce(r.brand, ''))) = '' OR lowerUTF8(trim(coalesce(r.brand, ''))) = 'неопознанный товар' OR lowerUTF8(trim(coalesce(r.brand, ''))) = lowerUTF8(r.cabinet), if(r.cabinet = 'CloudSix', 'Cloud Six', r.cabinet), trim(coalesce(r.brand, ''))) AS brand_key,
         toDateTime(toStartOfMonth(r.sale_date)) + INTERVAL 12 HOUR AS month,
         coalesce(nullIf(trim(r.supplier_article), ''), 'без артикула') AS sku,
         -- has_cost, а не проверка unit_cost на NULL: в ClickHouse LEFT JOIN
@@ -224,8 +225,8 @@ ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN gross_profit 'Ва�
 ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN cogs_qty_covered 'Проданных единиц с известной себестоимостью. Формула — в wb_metrics_by_sku_brand_month.';
 ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN cogs_qty_uncovered 'Проданных единиц БЕЗ себестоимости (посчитаны по нулю) — на столько занижены cogs/gross_profit. Формула — в wb_metrics_by_sku_brand_month.';
 
-ALTER TABLE wb_metrics_by_sku_brand_month COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
-ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
+ALTER TABLE wb_metrics_by_sku_brand_month COMMENT COLUMN brand 'Бренд строки отчёта (brand); пустой бренд и «Неопознанный Товар» — название кабинета, кабинет CloudSix везде «Cloud Six», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
+ALTER TABLE wb_metrics_by_cabinet_brand_month COMMENT COLUMN brand 'Бренд строки отчёта (brand); пустой бренд и «Неопознанный Товар» — название кабинета, кабинет CloudSix везде «Cloud Six», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
 
 -- ==== API: из schema_wb_metrics_views_sku.sql ====
 CREATE VIEW IF NOT EXISTS wb_metrics_by_sku_brand_month_api AS
@@ -243,7 +244,7 @@ base AS (
     SELECT
         cabinet,
         toDateTime(toStartOfMonth(sale_date)) + INTERVAL 12 HOUR AS month,
-        coalesce(nullIf(trim(brand), ''), 'Без бренда') AS brand_key,
+        if(lowerUTF8(trim(coalesce(brand, ''))) = '' OR lowerUTF8(trim(coalesce(brand, ''))) = 'неопознанный товар' OR lowerUTF8(trim(coalesce(brand, ''))) = lowerUTF8(cabinet), if(cabinet = 'CloudSix', 'Cloud Six', cabinet), trim(coalesce(brand, ''))) AS brand_key,
         coalesce(nullIf(trim(supplier_article), ''), 'без артикула') AS sku,
         anyHeavy(product_name) AS product_name,
 
@@ -303,7 +304,7 @@ base AS (
 cogs_agg AS (
     SELECT
         r.cabinet AS cabinet,
-        coalesce(nullIf(trim(r.brand), ''), 'Без бренда') AS brand_key,
+        if(lowerUTF8(trim(coalesce(r.brand, ''))) = '' OR lowerUTF8(trim(coalesce(r.brand, ''))) = 'неопознанный товар' OR lowerUTF8(trim(coalesce(r.brand, ''))) = lowerUTF8(r.cabinet), if(r.cabinet = 'CloudSix', 'Cloud Six', r.cabinet), trim(coalesce(r.brand, ''))) AS brand_key,
         toDateTime(toStartOfMonth(r.sale_date)) + INTERVAL 12 HOUR AS month,
         coalesce(nullIf(trim(r.supplier_article), ''), 'без артикула') AS sku,
         -- has_cost, а не проверка unit_cost на NULL: в ClickHouse LEFT JOIN
@@ -436,5 +437,5 @@ ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN gross_profit '�
 ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN cogs_qty_covered 'Проданных единиц с известной себестоимостью. Формула — в wb_metrics_by_sku_brand_month_api.';
 ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN cogs_qty_uncovered 'Проданных единиц БЕЗ себестоимости (посчитаны по нулю) — на столько занижены cogs/gross_profit. Формула — в wb_metrics_by_sku_brand_month_api.';
 
-ALTER TABLE wb_metrics_by_sku_brand_month_api COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
-ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN brand 'Бренд строки отчёта (brand), как есть; пустой бренд — «Без бренда», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
+ALTER TABLE wb_metrics_by_sku_brand_month_api COMMENT COLUMN brand 'Бренд строки отчёта (brand); пустой бренд и «Неопознанный Товар» — название кабинета, кабинет CloudSix везде «Cloud Six», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
+ALTER TABLE wb_metrics_by_cabinet_brand_month_api COMMENT COLUMN brand 'Бренд строки отчёта (brand); пустой бренд и «Неопознанный Товар» — название кабинета, кабинет CloudSix везде «Cloud Six», без перераспределения по артикулу. Один артикул может встречаться под несколькими брендами (бренд берётся из строки, а не из справочника).';
