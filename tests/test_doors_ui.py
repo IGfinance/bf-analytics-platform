@@ -104,10 +104,11 @@ def test_project_switcher_links_to_same_section_of_other_project(client):
     assert 'data-href="/p/realt/upload"' in html or re.search(r'data-href="[^"]*/p/realt/upload"', html)
 
 
-def test_cabinet_doors_start_disabled_until_cabinet_chosen(client):
+def test_cabinet_doors_explain_that_cabinet_is_detected_from_the_file(client):
     html = page(client, "/p/cloudsix/upload")
     assert html.count("data-needs-cabinet") >= 3             # WB detail, WB summary, Ozon
-    assert "Сначала выберите кабинет." in html
+    assert "Кабинет определится по файлу сам" in html          # раньше «Сначала выберите кабинет» + disabled-кнопка
+    assert html.count("data-detect-url") >= 3                    # у каждой кабинетной двери есть адрес автоопределения
     assert not re.search(r"<select", html)                   # нативных select на странице нет
 
 
