@@ -180,6 +180,82 @@ GROUP BY {grp}{rollup}
 """
 
 
+def card_sales_matrix(year):
+    """Продажи: строки — компания, продукция × (Кол-во / Цена / Выручка / Материалы / %), столбцы — месяцы."""
+    def expr(cond):
+        def mx(e):
+            return f'max(if({cond}, {e}, NULL))'
+        return (f'multiIf(k = 1, fmt_int({mx("q")}), '
+                f'k = 2, fmt_dec({mx("pq / nullIf(q, 0)")}), '
+                f'k = 3, fmt_int({mx("rev")}), '
+                f'k = 4, fmt_int({mx("mat")}), '
+                f'fmt_pct({mx("100 * mat / nullIf(rev, 0)")}))')
+    return f"""-- Metabase: "Визуал - Bottling - Продажи с материальной себестоимостью" (генерируется scripts/gen_bottling_chain_cards.py)
+-- Строки — компания (покупатель) и продукция; под продукцией: Количество / Цена в документе / Выручка без НДС /
+-- Материалы по учёту / Материалы % от выручки. Столбцы — месяцы {year} + Итого.
+-- Цена в документе — средневзвешенная по количеству, как в документе реализации. Материалы — ставка месяца
+-- (см. bottling.chain_sales): 0, если в месяце продажи этой продукции не выпускали или 1С не списал стоимость.
+{FMT},
+    agg AS (
+        SELECT counterparty AS company, product, month,
+               sum(quantity) AS q, sum(price * quantity) AS pq, sum(revenue) AS rev, sum(cost_material) AS mat
+        FROM bottling.chain_sales WHERE month >= '{year}-01-01'
+        GROUP BY company, product, month WITH ROLLUP
+        HAVING product != ''
+    ),
+    ranked AS (
+        SELECT *,
+               max(if(month = {TOTAL}, rev, NULL)) OVER (PARTITION BY company, product) AS tot_pair,
+               sum(if(month = {TOTAL}, rev, 0)) OVER (PARTITION BY company) AS tot_company
+        FROM agg
+    )
+SELECT
+    if(k = 1, company, '') AS "Компания",
+    if(k = 1, product, '') AS "Продукция",
+    ['Количество', 'Цена в документе, ₽', 'Выручка без НДС, ₽', 'Материалы по учёту, ₽', 'Материалы, % от выручки'][k] AS "Показатель",
+{mcols(year, expr)}
+FROM ranked
+ARRAY JOIN [1, 2, 3, 4, 5] AS k
+GROUP BY company, product, tot_pair, tot_company, k
+ORDER BY tot_company DESC, company, tot_pair DESC, product, k
+"""
+
+
+def card_usage_unit(year, col, title, comment):
+    """Расход материалов на штуку выпущенной продукции: строки — продукция, категория; столбцы — месяцы."""
+    cols = []
+    for i, name in enumerate(RU, 1):
+        c = mcond(year, i)
+        cols.append('    round(nullIf(sumIf(cst, %s), 0) / nullIf(sumIf(qty, %s), 0), 3) AS "%s-%s"' % (c, c, name, str(year)[2:]))
+    cols.append('    round(nullIf(sum(cst), 0) / nullIf(sum(qty), 0), 3) AS "Итого"')
+    return f"""-- Metabase: "{title}" (генерируется scripts/gen_bottling_chain_cards.py)
+-- {comment}
+-- Строки — продукция и категория материала; значение — рубли материалов на 1 выпущенную штуку продукции
+-- (рубли расхода категории за месяц / выпуск продукции за месяц). Итого — за весь период.
+-- Столбцы — месяцы {year}; пустая ячейка — нет расхода или выпуска в месяце.
+SELECT
+    product AS "Продукция",
+    material_category AS "Категория",
+{chr(10).join(c + ',' for c in cols[:-1])}
+{cols[-1]}
+FROM
+(
+    SELECT u.month AS month, u.product AS product, u.material_category AS material_category,
+           u.cst AS cst, o.qty_out AS qty
+    FROM
+    (
+        SELECT month, product, material_category, sum({col}) AS cst
+        FROM bottling.chain_usage WHERE month >= '{year}-01-01'
+        GROUP BY month, product, material_category
+    ) AS u
+    LEFT JOIN (SELECT month, product, sum(qty_out) AS qty_out FROM bottling.chain_output GROUP BY month, product) AS o
+        ON o.month = u.month AND o.product = u.product
+)
+GROUP BY product, material_category
+ORDER BY product, material_category
+"""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--year', type=int, default=2026)
@@ -192,11 +268,13 @@ def main():
             'Из чего произведено: строки — продукция и категория материала, значения — расход материала по отчётам производства (в единицах материала).',
             'bottling.chain_usage', 'product, material_category', 'sum(qty_used)', y,
             [('product', 'Продукция'), ('material_category', 'Категория')], rounding=1),
-        'usage_cost': card_matrix(
-            'Визуал - Bottling - Расход материалов в производство, по ценам закупки',
-            'Те же строки, значения — расход × последняя цена закупки без НДС на дату расхода, ₽. Справочно: не учёт 1С.',
-            'bottling.chain_usage', 'product, material_category', 'sum(cost_ref)', y,
-            [('product', 'Продукция'), ('material_category', 'Категория')], rounding=0),
+        'usage_cost': card_usage_unit(
+            y, 'cost_ref', 'Визуал - Bottling - Расход материалов на штуку, по ценам закупки',
+            'Справочно, не учёт 1С: расход материалов × последняя цена закупки без НДС на дату расхода.'),
+        'usage_cost_book': card_usage_unit(
+            y, 'cost', 'Визуал - Bottling - Расход материалов на штуку, по учёту',
+            'Как списано в учёте 1С (ставка материала в месяце, регламентная операция); 0 — 1С стоимость не списала.'),
+        'sales_matrix': card_sales_matrix(y),
         'output_qty': card_matrix(
             'Визуал - Bottling - Выпуск, штук',
             'Выпуск готовой продукции по отчётам производства, шт.',

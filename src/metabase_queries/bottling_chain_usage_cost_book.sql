@@ -1,5 +1,5 @@
--- Metabase: "Визуал - Bottling - Расход материалов на штуку, по ценам закупки" (генерируется scripts/gen_bottling_chain_cards.py)
--- Справочно, не учёт 1С: расход материалов × последняя цена закупки без НДС на дату расхода.
+-- Metabase: "Визуал - Bottling - Расход материалов на штуку, по учёту" (генерируется scripts/gen_bottling_chain_cards.py)
+-- Как списано в учёте 1С (ставка материала в месяце, регламентная операция); 0 — 1С стоимость не списала.
 -- Строки — продукция и категория материала; значение — рубли материалов на 1 выпущенную штуку продукции
 -- (рубли расхода категории за месяц / выпуск продукции за месяц). Итого — за весь период.
 -- Столбцы — месяцы 2026; пустая ячейка — нет расхода или выпуска в месяце.
@@ -25,7 +25,7 @@ FROM
            u.cst AS cst, o.qty_out AS qty
     FROM
     (
-        SELECT month, product, material_category, sum(cost_ref) AS cst
+        SELECT month, product, material_category, sum(cost) AS cst
         FROM bottling.chain_usage WHERE month >= '2026-01-01'
         GROUP BY month, product, material_category
     ) AS u
