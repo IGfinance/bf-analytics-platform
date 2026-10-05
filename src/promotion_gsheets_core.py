@@ -251,8 +251,13 @@ def _ingest(project_id: int, log, database: str | None, spreadsheet_id: str | No
     if not rows:
         raise ValueError(f"Не найдено ни одной строки во вкладке «{sheet_name}» ({source_label})")
 
+    # Одна метка на всю загрузку — по ней *_current отличает свежий снимок вкладки
+    # от прошлых (удалять старые нельзя: у app_cloudsix нет DELETE).
+    loaded_at = datetime.now().replace(microsecond=0)
+    columns = columns + ["loaded_at"]
     for row in rows:
         row["project_id"] = project_id
+        row["loaded_at"] = loaded_at
 
     client = get_client(database=database)
     data = [[row.get(col) for col in columns] for row in rows]
@@ -294,3 +299,27 @@ def ingest_ozon_promotion_reference(project_id: int, log=print, database: str | 
     return _ingest(project_id, log, database, spreadsheet_id, sheet_name,
                    parse_ozon_promotion_reference, "ozon_promotion_reference",
                    OZON_PROMOTION_REFERENCE_COLUMNS, "SKU")
+
+
+PROMOTION_TABS = [
+    ("Продв WB", ingest_wb_promotion),
+    ("Продв Ozon", ingest_ozon_promotion),
+    ("Справочник WB", ingest_wb_promotion_reference),
+    ("Справочник Ozon", ingest_ozon_promotion_reference),
+]
+
+
+def ingest_all(project_id: int, log=print, database: str | None = None,
+               spreadsheet_id: str | None = None) -> dict:
+    """Грузит все 4 вкладки подряд. Сбой одной не валит остальные (как в cron-скриптах).
+
+    Возвращает {вкладка: summary-dict | {"error": текст}}."""
+    results = {}
+    for name, fn in PROMOTION_TABS:
+        log(f"--- {name} ---")
+        try:
+            results[name] = fn(project_id, log=log, database=database, spreadsheet_id=spreadsheet_id)
+        except Exception as e:  # noqa: BLE001 — одна вкладка не должна ронять остальные
+            log(f"ОШИБКА: {name}: {e}")
+            results[name] = {"error": str(e)}
+    return results

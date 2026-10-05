@@ -131,3 +131,54 @@ def test_parse_ozon_promotion_reference():
         "row_num": 5, "source_file": g.OZON_PROMOTION_REFERENCE_SOURCE,
         "sku": "4068406020", "article": "повер 10 с беспр. зарядом",
     }
+
+
+class _FakeClient:
+    def __init__(self):
+        self.inserts = []
+
+    def insert(self, table, data, column_names):
+        self.inserts.append((table, data, column_names))
+
+
+def test_ingest_stamps_one_loaded_at_per_load(monkeypatch):
+    """Все строки одной загрузки несут одну метку loaded_at — по ней *_current берёт свежий снимок."""
+    fake = _FakeClient()
+    monkeypatch.setattr(g, "read_tab", lambda sid, name: [WB_HEADER, [
+        "1", "camp/A", "Ручная", "01.08.2026", "Баланс", "100", "d1", "", "A"],
+        ["2", "camp/B", "Ручная", "02.08.2026", "Баланс", "200", "d2", "", "B"]])
+    monkeypatch.setattr(g, "get_client", lambda database=None: fake)
+    summary = g.ingest_wb_promotion(1, log=lambda *_: None, spreadsheet_id="x")
+    assert summary == {"rows": 2, "skipped": 0}
+    (table, data, cols), = fake.inserts
+    assert table == "wb_promotion" and cols[-1] == "loaded_at"
+    stamps = {row[-1] for row in data}
+    assert len(stamps) == 1
+
+
+def test_ingest_all_one_tab_failure_does_not_stop_others(monkeypatch):
+    calls = []
+
+    def ok(name):
+        def f(project_id, log=print, database=None, spreadsheet_id=None):
+            calls.append(name)
+            return {"rows": 1, "skipped": 0}
+        return f
+
+    def boom(project_id, log=print, database=None, spreadsheet_id=None):
+        calls.append("boom")
+        raise ValueError("пусто")
+
+    monkeypatch.setattr(g, "PROMOTION_TABS", [("A", ok("A")), ("B", boom), ("C", ok("C"))])
+    res = g.ingest_all(1, log=lambda *_: None)
+    assert calls == ["A", "boom", "C"]
+    assert res["A"] == {"rows": 1, "skipped": 0}
+    assert res["B"] == {"error": "пусто"}
+    assert res["C"] == {"rows": 1, "skipped": 0}
+
+
+def test_schema_views_read_only_latest_snapshot():
+    from pathlib import Path
+    sql = (Path(g.SCRIPT_DIR) / "schema_promotion.sql").read_text(encoding="utf-8")
+    assert "FROM wb_promotion_current" in sql and "FROM ozon_promotion_current" in sql
+    assert "max(loaded_at)" in sql

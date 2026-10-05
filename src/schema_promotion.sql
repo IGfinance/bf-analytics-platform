@@ -95,20 +95,49 @@ CREATE TABLE IF NOT EXISTS ozon_promotion_reference
 ENGINE = ReplacingMergeTree(loaded_at)
 ORDER BY (project_id, source_file, row_num);
 
+-- Дедуп при перезаливке. Таблица грузится ЦЕЛИКОМ каждый раз (вкладка читается
+-- полностью), а ключ ReplacingMergeTree — номер строки во вкладке: если маркетолог
+-- вставил/удалил строку выше, row_num сдвигается и старые строки не заменяются
+-- (дубли и «призраки»). Удалять нельзя — у app_cloudsix только SELECT, INSERT.
+-- Поэтому каждая загрузка (одна вкладка) проставляет всем строкам ОДНУ метку
+-- loaded_at, а *_current отдаёт только строки последней загрузки каждого
+-- (project_id, source_file). Старые снимки остаются как история, на расчёты
+-- не влияют. Читать wb_promotion/ozon_promotion напрямую для сумм нельзя.
+CREATE OR REPLACE VIEW wb_promotion_current AS
+SELECT * FROM wb_promotion
+WHERE (project_id, source_file, loaded_at) IN
+    (SELECT project_id, source_file, max(loaded_at) FROM wb_promotion GROUP BY project_id, source_file);
+
+CREATE OR REPLACE VIEW ozon_promotion_current AS
+SELECT * FROM ozon_promotion
+WHERE (project_id, source_file, loaded_at) IN
+    (SELECT project_id, source_file, max(loaded_at) FROM ozon_promotion GROUP BY project_id, source_file);
+
+CREATE OR REPLACE VIEW wb_promotion_reference_current AS
+SELECT * FROM wb_promotion_reference
+WHERE (project_id, source_file, loaded_at) IN
+    (SELECT project_id, source_file, max(loaded_at) FROM wb_promotion_reference GROUP BY project_id, source_file);
+
+CREATE OR REPLACE VIEW ozon_promotion_reference_current AS
+SELECT * FROM ozon_promotion_reference
+WHERE (project_id, source_file, loaded_at) IN
+    (SELECT project_id, source_file, max(loaded_at) FROM ozon_promotion_reference GROUP BY project_id, source_file);
+
 -- promotion_by_article_month — семантический слой «Продвижение CS»: расход
 -- на продвижение поартикульно по месяцам, из обоих источников (WB —
 -- суммируется из посуточных строк; Ozon — уже помесячно). Независимый
 -- источник от promotion_cost в wb_metrics_by_sku_month/ozon_metrics_by_sku_month
 -- (тот — из официальных финотчётов площадок, этот — из ручной Google-Таблицы
--- маркетолога); не смешивать при анализе без явного сопоставления.
-CREATE VIEW IF NOT EXISTS promotion_by_article_month AS
+-- маркетолога), читает только последнюю загрузку вкладки (см. *_current выше);
+-- не смешивать при анализе без явного сопоставления.
+CREATE OR REPLACE VIEW promotion_by_article_month AS
 SELECT
     project_id,
     'wb' AS platform,
     article,
     toStartOfMonth(promo_date) AS month,
     sum(amount) AS promotion_rub
-FROM wb_promotion
+FROM wb_promotion_current
 WHERE article IS NOT NULL AND promo_date IS NOT NULL
 GROUP BY project_id, article, month
 UNION ALL
@@ -118,6 +147,6 @@ SELECT
     article,
     toStartOfMonth(promo_date) AS month,
     sum(spend_rub) AS promotion_rub
-FROM ozon_promotion
+FROM ozon_promotion_current
 WHERE article IS NOT NULL AND promo_date IS NOT NULL
 GROUP BY project_id, article, month;
