@@ -130,23 +130,40 @@ WHERE (project_id, source_file, loaded_at) IN
 -- (тот — из официальных финотчётов площадок, этот — из ручной Google-Таблицы
 -- маркетолога), читает только последнюю загрузку вкладки (см. *_current выше);
 -- не смешивать при анализе без явного сопоставления.
+--
+-- Честные пробелы: ничего не выбрасываем. Строка без артикула (ВПР не нашёл
+-- кампанию/SKU — ячейка пустая или «#N/A»/«#REF!») попадает в артикул
+-- «без артикула» (как расходы Ozon без артикула в метриках), строка без даты —
+-- в month = NULL. Сумма по проекту поэтому всегда равна сумме в таблице маркетолога,
+-- а доля непокрытого видна по rows_total/rows_unmapped и promotion_unmapped_rub.
 CREATE OR REPLACE VIEW promotion_by_article_month AS
 SELECT
     project_id,
-    'wb' AS platform,
-    article,
-    toStartOfMonth(promo_date) AS month,
-    sum(amount) AS promotion_rub
-FROM wb_promotion_current
-WHERE article IS NOT NULL AND promo_date IS NOT NULL
-GROUP BY project_id, article, month
-UNION ALL
-SELECT
-    project_id,
-    'ozon' AS platform,
-    article,
-    toStartOfMonth(promo_date) AS month,
-    sum(spend_rub) AS promotion_rub
-FROM ozon_promotion_current
-WHERE article IS NOT NULL AND promo_date IS NOT NULL
-GROUP BY project_id, article, month;
+    platform,
+    if(unmapped, 'без артикула', art) AS article,
+    month,
+    sum(amount) AS promotion_rub,
+    count() AS rows_total,
+    sum(unmapped) AS rows_unmapped,
+    sumIf(amount, unmapped) AS promotion_unmapped_rub
+FROM
+(
+    SELECT
+        project_id,
+        'wb' AS platform,
+        article AS art,
+        toStartOfMonth(promo_date) AS month,
+        amount,
+        (article IS NULL OR article = '' OR article LIKE '#%') AS unmapped
+    FROM wb_promotion_current
+    UNION ALL
+    SELECT
+        project_id,
+        'ozon' AS platform,
+        article AS art,
+        toStartOfMonth(promo_date) AS month,
+        spend_rub AS amount,
+        (article IS NULL OR article = '' OR article LIKE '#%') AS unmapped
+    FROM ozon_promotion_current
+)
+GROUP BY project_id, platform, article, month;
