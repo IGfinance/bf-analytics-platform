@@ -48,16 +48,38 @@ ALTER TABLE bottling.purchase_lines COMMENT COLUMN price 'Цена как в д�
 
 -- Закупки материалов без НДС: цена и сумма «чистые», как стоимость в
 -- 10.01. Только проведённые, неудалённые документы, счёт учёта 10.01.
+-- price_ok = 0 — цена выбивается от медианы по этому материалу больше чем
+-- в 10 раз в любую сторону: почти всегда ошибка ввода единицы в 1С (напр.
+-- количество QR-кодов внесено в тысячах при единице «шт» — цена 150 ₽ вместо
+-- 0,6 ₽). Такие строки остаются в данных, но в справочные цены цепочки не
+-- идут. Сумма (amount_net) от этого не страдает.
 CREATE OR REPLACE VIEW bottling.purchases AS
 SELECT
-    ref_key, line_number, number, date,
-    toStartOfMonth(date)                         AS month,
+    ref_key, line_number, number, date, month,
     supplier, contract, warehouse, incoming_number,
-    nomenclature, unit, quantity,
-    vat_rate, vat_amount,
-    if(amount_includes_vat = 1, raw_amount - vat_amount, raw_amount) AS amount_net,
-    if(quantity != 0,
-       if(amount_includes_vat = 1, raw_amount - vat_amount, raw_amount) / quantity,
-       0)                                        AS price_net
-FROM bottling.purchase_lines
-WHERE posted = 1 AND deletion_mark = 0 AND account_code = '10.01';
+    nomenclature, unit, quantity, vat_rate, vat_amount,
+    amount_net, price_net,
+    if(med > 0 AND price_net >= med / 10 AND price_net <= med * 10, 1, 0) AS price_ok
+FROM
+(
+    SELECT
+        ref_key, line_number, number, date,
+        toStartOfMonth(date) AS month,
+        supplier, contract, warehouse, incoming_number,
+        nomenclature, unit, quantity,
+        vat_rate, vat_amount,
+        if(amount_includes_vat = 1, raw_amount - vat_amount, raw_amount) AS amount_net,
+        if(quantity != 0,
+           if(amount_includes_vat = 1, raw_amount - vat_amount, raw_amount) / quantity,
+           0) AS price_net,
+        quantile(0.5)(price_net_t) OVER (PARTITION BY nomenclature) AS med
+    FROM
+    (
+        SELECT *,
+            if(quantity != 0,
+               if(amount_includes_vat = 1, raw_amount - vat_amount, raw_amount) / quantity,
+               0) AS price_net_t
+        FROM bottling.purchase_lines
+        WHERE posted = 1 AND deletion_mark = 0 AND account_code = '10.01'
+    )
+);

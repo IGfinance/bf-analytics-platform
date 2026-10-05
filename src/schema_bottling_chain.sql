@@ -90,7 +90,7 @@ LEFT ASOF JOIN
 (
     SELECT trimBoth(nomenclature) AS material, date AS purchase_date, price_net
     FROM bottling.purchases
-    WHERE quantity > 0 AND price_net > 0
+    WHERE quantity > 0 AND price_net > 0 AND price_ok = 1
 ) AS p ON p.material = u.material AND u.date >= p.purchase_date;
 
 -- 3. Выпуск готовой продукции по отчётам производства -------------------
