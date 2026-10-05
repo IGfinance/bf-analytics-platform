@@ -7,14 +7,16 @@
 -- Артикул в API нет: он зашит в имя кампании («<id>/<артикул>/<Поиск|АРК>»),
 -- берём второй сегмент — см. wb_promotion_api_by_article_month.
 --
--- Ключ ReplacingMergeTree — естественный (кабинет, кампания, документ, время,
--- источник списания): повторная загрузка окна перезаписывает те же строки,
--- ни снимки, ни DELETE не нужны.
+-- Ключ ReplacingMergeTree — естественный (кабинет, кампания, время, источник
+-- списания), БЕЗ номера документа: у свежих списаний updNum = -1 («документ ещё
+-- не выпущен»), позже WB присваивает реальный номер — при перезагрузке окна
+-- строка заменяется (loaded_at), а не дублируется. Проверено на CloudSix/Hauser:
+-- такой ключ уникален. Читать только с FINAL (слияния асинхронны) — вьюхи ниже так и делают.
 CREATE TABLE IF NOT EXISTS wb_promotion_api
 (
     cabinet        String,
     advert_id      UInt64            COMMENT 'ID кампании',
-    upd_num        UInt64            COMMENT 'Номер документа списания (updNum)',
+    upd_num        Int64             COMMENT 'Номер документа списания (updNum); -1 — документ ещё не выпущен',
     upd_time       DateTime          COMMENT 'Время списания (updTime), приведено к МСК',
     promo_date     Date              COMMENT 'Дата списания по МСК',
     camp_name      String            COMMENT 'Имя кампании — содержит артикул',
@@ -27,7 +29,7 @@ CREATE TABLE IF NOT EXISTS wb_promotion_api
 )
 ENGINE = ReplacingMergeTree(loaded_at)
 PARTITION BY toYYYYMM(promo_date)
-ORDER BY (cabinet, advert_id, upd_num, upd_time, payment_type);
+ORDER BY (cabinet, advert_id, upd_time, payment_type);
 
 -- Расход по кабинету/артикулу/месяцу. Артикул — второй сегмент имени кампании;
 -- имя без такого сегмента → «без артикула» (не выбрасываем, сумма сохраняется).
@@ -40,7 +42,7 @@ SELECT
     sum(upd_sum) AS promotion_rub,
     count() AS rows_total,
     uniqExact(advert_id) AS campaigns
-FROM wb_promotion_api
+FROM wb_promotion_api FINAL
 GROUP BY cabinet, article, month;
 
 -- Сверка API с ручной Google-Таблицей (wb_promotion_current, проект 1 = CloudSix):
