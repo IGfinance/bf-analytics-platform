@@ -145,7 +145,7 @@ SELECT
     sum(amount) AS promotion_rub,
     count() AS rows_total,
     sum(unmapped) AS rows_unmapped,
-    sumIf(amount, unmapped) AS promotion_unmapped_rub
+    ifNull(sumIf(amount, unmapped), 0) AS promotion_unmapped_rub
 FROM
 (
     SELECT
