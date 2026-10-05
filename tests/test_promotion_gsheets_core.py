@@ -182,3 +182,13 @@ def test_schema_views_read_only_latest_snapshot():
     sql = (Path(g.SCRIPT_DIR) / "schema_promotion.sql").read_text(encoding="utf-8")
     assert "FROM wb_promotion_current" in sql and "FROM ozon_promotion_current" in sql
     assert "max(loaded_at)" in sql
+
+
+def test_schema_view_keeps_unmapped_rows_visible():
+    """Строки без артикула/даты не выбрасываются — идут в «без артикула» со счётчиками покрытия."""
+    from pathlib import Path
+    sql = (Path(g.SCRIPT_DIR) / "schema_promotion.sql").read_text(encoding="utf-8")
+    view = sql[sql.index("CREATE OR REPLACE VIEW promotion_by_article_month"):]
+    assert "IS NOT NULL" not in view
+    assert "'без артикула'" in view and "LIKE '#%'" in view
+    assert "rows_unmapped" in view and "promotion_unmapped_rub" in view
