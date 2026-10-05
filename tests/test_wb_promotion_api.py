@@ -38,3 +38,14 @@ def test_schema_view_keeps_nameless_campaigns_as_no_article():
 def test_parse_ts_accepts_odd_fraction_length():
     assert c.parse_ts("2026-09-01T00:32:57.95896+03:00").hour == 0
     assert c.parse_ts("2026-08-31T23:59:59+03:00").second == 59
+
+
+def test_key_excludes_upd_num_and_allows_negative_numbers():
+    """updNum = -1 у свежих списаний: поле знаковое и не в ключе, иначе строка задвоится."""
+    assert "upd_num        Int64" in SQL
+    order = [l for l in SQL.splitlines() if l.startswith("ORDER BY")][0]
+    assert "upd_num" not in order
+    assert "FROM wb_promotion_api FINAL" in SQL
+    raw = {"updTime": "2026-09-26T23:59:59+03:00", "campName": "1/A/Поиск", "paymentType": "Баланс",
+           "updNum": -1, "updSum": 5, "advertId": 7}
+    assert c.to_record(raw, "X", datetime(2026, 10, 5))[2] == -1
