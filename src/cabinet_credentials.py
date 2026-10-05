@@ -65,3 +65,8 @@ def get_ozon_credentials(cabinet: str) -> tuple[str, str]:
             "Заполните перед загрузкой."
         )
     return entry["client_id"], entry["api_key"]
+
+
+def list_wb_cabinets() -> list[str]:
+    """Кабинеты, у которых в JSON есть WB-токен."""
+    return sorted(k for k, v in _load().items() if v.get("wb", {}).get("token"))
