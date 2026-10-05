@@ -42,44 +42,55 @@ def mcols(year, expr):
 
 def card_chain(year):
     """1. Цепочка по месяцам: строки — показатели, столбцы — месяцы."""
-    metrics = [  # (подпись, формула по компонентам, вид 0=целое 1=3 знака 2=%)
+    # (подпись | None = разделитель, формула по компонентам, вид 0=целое 1=3 знака 2=%)
+    metrics = [
         ('Закуплено материалов, ₽', 'bought', 0),
         ('Материалы в выпуске по учёту, ₽', 'mat_booked', 0),
-        ('Материалы в выпуске по ценам закупки, ₽ справочно', 'mat_ref', 0),
-        ('Выпущено, шт', 'made', 0),
-        ('Материалы на шт по учёту, ₽', 'mat_booked / nullIf(made, 0)', 1),
-        ('Продано, шт', 'sold_qty', 0),
-        ('Выручка без НДС, ₽', 'rev', 0),
         ('Материалы проданного по учёту, ₽', 'mat_sold', 0),
-        ('Материалы, % от выручки', '100 * mat_sold / nullIf(rev, 0)', 2),
+        ('Выручка без НДС, ₽', 'rev', 0),
+        (None, 'NULL', 0),
+        ('Остатки материалов на конец месяца, ₽', 'bal_mat', 0),
+        ('Остатки готовой продукции на конец месяца, ₽, полная себестоимость по учёту', 'bal_goods', 0),
+        (None, 'NULL', 0),
+        ('Материалы проданного по учёту, % от выручки без НДС', '100 * mat_sold / nullIf(rev, 0)', 2),
         ('Продано с известной себестоимостью, % шт', '100 * sold_known / nullIf(sold_qty, 0)', 2),
     ]
-    vals = ', '.join(f'toNullable({f})' for _, f, _ in metrics)
-    labels = ', '.join(f"'{l}'" for l, _, _ in metrics)
+    # остатки в «Итого» не суммируются — пустая ячейка
+    no_total = {'bal_mat', 'bal_goods'}
+    vals = ', '.join(
+        f"toNullable(if(month = {TOTAL}, NULL, nullIf({f}, 0)))" if f in no_total else f'toNullable({f})'
+        for _, f, _ in metrics)
+    labels = ', '.join('NULL' if l is None else f"'{l}'" for l, _, _ in metrics)
     kinds = ', '.join(str(k) for _, _, k in metrics)
 
     def expr(cond):
         return (f'multiIf(kinds[idx] = 0, fmt_int(max(if({cond}, v, NULL))), '
                 f'kinds[idx] = 1, fmt_dec(max(if({cond}, v, NULL))), fmt_pct(max(if({cond}, v, NULL))))')
     return f"""-- Metabase: "Визуал - Bottling - Цепочка по месяцам" (генерируется scripts/gen_bottling_chain_cards.py)
--- Материальная цепочка: закупка → расход в производство → выпуск → продажа. Строки — показатели,
--- столбцы — месяцы {year} + Итого. Только материалы (Дт 20.01 / Кт 10.01).
--- «По учёту» — стоимость из проводок 1С; «по ценам закупки» — справочная оценка, в итоги не входит.
+-- Материальная цепочка: закупка → расход в производство → продажа, остатки, проценты. Строки — показатели,
+-- столбцы — месяцы {year} + Итого. Пустые строки (Показатель = NULL) — цветные разделители (см. настройки карточки).
+-- Материалы — Дт 20.01 / Кт 10.01 по учёту 1С. Остатки — из 1С (BalanceAndTurnovers) на конец месяца:
+-- материалы = счёт 10.01, готовая продукция = счёт 43 по ПОЛНОЙ учётной себестоимости (не только материалы).
+-- Месяц, не закрытый в 1С (сентябрь 2026), — остатки предварительные, расход материалов ещё не списан по стоимости.
 {FMT},
     base AS (
         SELECT month,
-               sum(bought) AS bought, sum(mat_booked) AS mat_booked, sum(mat_ref) AS mat_ref, sum(made) AS made,
-               sum(sold_qty) AS sold_qty, sum(sold_known) AS sold_known, sum(rev) AS rev, sum(mat_sold) AS mat_sold
+               sum(bought) AS bought, sum(mat_booked) AS mat_booked, sum(mat_sold) AS mat_sold, sum(rev) AS rev,
+               sum(sold_qty) AS sold_qty, sum(sold_known) AS sold_known,
+               sum(bal_mat) AS bal_mat, sum(bal_goods) AS bal_goods
         FROM
         (
-            SELECT month, sum(amount_net) AS bought, 0 AS mat_booked, 0 AS mat_ref, 0 AS made, 0 AS sold_qty, 0 AS sold_known, 0 AS rev, 0 AS mat_sold
+            SELECT month, sum(amount_net) AS bought, 0 AS mat_booked, 0 AS mat_sold, 0 AS rev, 0 AS sold_qty, 0 AS sold_known, 0 AS bal_mat, 0 AS bal_goods
             FROM bottling.purchases WHERE month >= '{year}-01-01' GROUP BY month
             UNION ALL
-            SELECT month, 0, sum(cost_material), sum(cost_material_ref), sum(qty_out), 0, 0, 0, 0
+            SELECT month, 0, sum(cost_material), 0, 0, 0, 0, 0, 0
             FROM bottling.chain_product_month WHERE month >= '{year}-01-01' GROUP BY month
             UNION ALL
-            SELECT month, 0, 0, 0, 0, sum(quantity), sumIf(quantity, has_cost = 1), sum(revenue), sum(cost_material)
+            SELECT month, 0, 0, sum(cost_material), sum(revenue), sum(quantity), sumIf(quantity, has_cost = 1), 0, 0
             FROM bottling.chain_sales WHERE month >= '{year}-01-01' GROUP BY month
+            UNION ALL
+            SELECT month, 0, 0, 0, 0, 0, 0, sum(balance_materials), sum(balance_goods)
+            FROM bottling.balances_month WHERE month >= '{year}-01-01' GROUP BY month
         )
         GROUP BY month WITH ROLLUP
     )

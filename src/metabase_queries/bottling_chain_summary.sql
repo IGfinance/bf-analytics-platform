@@ -1,7 +1,9 @@
 -- Metabase: "Визуал - Bottling - Цепочка по месяцам" (генерируется scripts/gen_bottling_chain_cards.py)
--- Материальная цепочка: закупка → расход в производство → выпуск → продажа. Строки — показатели,
--- столбцы — месяцы 2026 + Итого. Только материалы (Дт 20.01 / Кт 10.01).
--- «По учёту» — стоимость из проводок 1С; «по ценам закупки» — справочная оценка, в итоги не входит.
+-- Материальная цепочка: закупка → расход в производство → продажа, остатки, проценты. Строки — показатели,
+-- столбцы — месяцы 2026 + Итого. Пустые строки (Показатель = NULL) — цветные разделители (см. настройки карточки).
+-- Материалы — Дт 20.01 / Кт 10.01 по учёту 1С. Остатки — из 1С (BalanceAndTurnovers) на конец месяца:
+-- материалы = счёт 10.01, готовая продукция = счёт 43 по ПОЛНОЙ учётной себестоимости (не только материалы).
+-- Месяц, не закрытый в 1С (сентябрь 2026), — остатки предварительные, расход материалов ещё не списан по стоимости.
 WITH
     (x -> if(x IS NULL, '',
         concat(if(x < 0, '-', ''),
@@ -14,18 +16,22 @@ WITH
     (x -> if(x IS NULL, '', concat(replaceOne(if(position(toString(round(x, 1)), '.') = 0, concat(toString(round(x, 1)), '.0'), toString(round(x, 1))), '.', ','), ' %'))) AS fmt_pct,
     base AS (
         SELECT month,
-               sum(bought) AS bought, sum(mat_booked) AS mat_booked, sum(mat_ref) AS mat_ref, sum(made) AS made,
-               sum(sold_qty) AS sold_qty, sum(sold_known) AS sold_known, sum(rev) AS rev, sum(mat_sold) AS mat_sold
+               sum(bought) AS bought, sum(mat_booked) AS mat_booked, sum(mat_sold) AS mat_sold, sum(rev) AS rev,
+               sum(sold_qty) AS sold_qty, sum(sold_known) AS sold_known,
+               sum(bal_mat) AS bal_mat, sum(bal_goods) AS bal_goods
         FROM
         (
-            SELECT month, sum(amount_net) AS bought, 0 AS mat_booked, 0 AS mat_ref, 0 AS made, 0 AS sold_qty, 0 AS sold_known, 0 AS rev, 0 AS mat_sold
+            SELECT month, sum(amount_net) AS bought, 0 AS mat_booked, 0 AS mat_sold, 0 AS rev, 0 AS sold_qty, 0 AS sold_known, 0 AS bal_mat, 0 AS bal_goods
             FROM bottling.purchases WHERE month >= '2026-01-01' GROUP BY month
             UNION ALL
-            SELECT month, 0, sum(cost_material), sum(cost_material_ref), sum(qty_out), 0, 0, 0, 0
+            SELECT month, 0, sum(cost_material), 0, 0, 0, 0, 0, 0
             FROM bottling.chain_product_month WHERE month >= '2026-01-01' GROUP BY month
             UNION ALL
-            SELECT month, 0, 0, 0, 0, sum(quantity), sumIf(quantity, has_cost = 1), sum(revenue), sum(cost_material)
+            SELECT month, 0, 0, sum(cost_material), sum(revenue), sum(quantity), sumIf(quantity, has_cost = 1), 0, 0
             FROM bottling.chain_sales WHERE month >= '2026-01-01' GROUP BY month
+            UNION ALL
+            SELECT month, 0, 0, 0, 0, 0, 0, sum(balance_materials), sum(balance_goods)
+            FROM bottling.balances_month WHERE month >= '2026-01-01' GROUP BY month
         )
         GROUP BY month WITH ROLLUP
     )
@@ -46,8 +52,8 @@ SELECT
     multiIf(kinds[idx] = 0, fmt_int(max(if(month = toDate('1970-01-01'), v, NULL))), kinds[idx] = 1, fmt_dec(max(if(month = toDate('1970-01-01'), v, NULL))), fmt_pct(max(if(month = toDate('1970-01-01'), v, NULL)))) AS "Итого"
 FROM
 (
-    SELECT month, idx, [toNullable(bought), toNullable(mat_booked), toNullable(mat_ref), toNullable(made), toNullable(mat_booked / nullIf(made, 0)), toNullable(sold_qty), toNullable(rev), toNullable(mat_sold), toNullable(100 * mat_sold / nullIf(rev, 0)), toNullable(100 * sold_known / nullIf(sold_qty, 0))][idx] AS v,
-           ['Закуплено материалов, ₽', 'Материалы в выпуске по учёту, ₽', 'Материалы в выпуске по ценам закупки, ₽ справочно', 'Выпущено, шт', 'Материалы на шт по учёту, ₽', 'Продано, шт', 'Выручка без НДС, ₽', 'Материалы проданного по учёту, ₽', 'Материалы, % от выручки', 'Продано с известной себестоимостью, % шт'] AS labels, [0, 0, 0, 0, 1, 0, 0, 0, 2, 2] AS kinds
+    SELECT month, idx, [toNullable(bought), toNullable(mat_booked), toNullable(mat_sold), toNullable(rev), toNullable(NULL), toNullable(if(month = toDate('1970-01-01'), NULL, nullIf(bal_mat, 0))), toNullable(if(month = toDate('1970-01-01'), NULL, nullIf(bal_goods, 0))), toNullable(NULL), toNullable(100 * mat_sold / nullIf(rev, 0)), toNullable(100 * sold_known / nullIf(sold_qty, 0))][idx] AS v,
+           ['Закуплено материалов, ₽', 'Материалы в выпуске по учёту, ₽', 'Материалы проданного по учёту, ₽', 'Выручка без НДС, ₽', NULL, 'Остатки материалов на конец месяца, ₽', 'Остатки готовой продукции на конец месяца, ₽, полная себестоимость по учёту', NULL, 'Материалы проданного по учёту, % от выручки без НДС', 'Продано с известной себестоимостью, % шт'] AS labels, [0, 0, 0, 0, 0, 0, 0, 0, 2, 2] AS kinds
     FROM base
     ARRAY JOIN range(1, 11) AS idx
 )
