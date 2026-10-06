@@ -12,6 +12,7 @@ from __future__ import annotations
 """
 
 import argparse
+import calendar
 import json
 import sys
 from datetime import date
@@ -36,6 +37,7 @@ WRITEOFF_DOCS = {
     '25df88dc-8826-11f1-970b-d843ae4319c8': ('Document_ТребованиеНакладная', 'требование «Списание материалов в производство»'),
 }
 OPENING_DOC = 'b0831a30-2cdf-11f1-96d7-d843ae4319c8'   # ПЛБП-000173, ввод остатка 31.12.2025
+JUICE_SCAN_CACHE = Path('/tmp/scan_juice.json')   # результат полного скана проводок, ~15 мин; --rescan пересобирает
 COLUMNS = ['case_name', 'stage_no', 'stage', 'event_date', 'document', 'counterparty', 'nomenclature',
            'quantity', 'price', 'amount', 'note']
 
@@ -44,10 +46,44 @@ def d10(s: str) -> str:
     return s[:10]
 
 
+def scan_juice_entries(juice_keys: dict, acc: dict, rescan: bool) -> list[dict]:
+    """Все проводки по трём позициям соков, где на другой стороне 10.01 (поступления, расход в
+    производство, списания на ОПР), июль 2023 — май 2026. Медленно (месяц за месяцем), поэтому кэш."""
+    if JUICE_SCAN_CACHE.exists() and not rescan:
+        return json.load(open(JUICE_SCAN_CACHE, encoding='utf-8'))
+    out = []
+    months = ([(2023, m) for m in range(7, 13)] + [(2024, m) for m in range(1, 13)]
+              + [(2025, m) for m in range(1, 13)] + [(2026, m) for m in range(1, 6)])
+    for y, m in months:
+        last = calendar.monthrange(y, m)[1]
+        skip = 0
+        while True:
+            b = odata_get_json("AccountingRegister_Хозрасчетный/RecordsWithExtDimensions("
+                               f"StartPeriod=datetime'{y}-{m:02d}-01T00:00:00',EndPeriod=datetime'{y}-{m:02d}-{last}T23:59:59')"
+                               f"?$format=json&$top=2000&$skip={skip}")['value']
+            skip += len(b)
+            for r in b:
+                if not r.get('Active'):
+                    continue
+                k = r.get('ExtDimensionCr1') if r.get('ExtDimensionCr1') in juice_keys else (
+                    r.get('ExtDimensionDr1') if r.get('ExtDimensionDr1') in juice_keys else None)
+                if k and '10.01' in (acc.get(r['AccountCr_Key']), acc.get(r['AccountDr_Key'])):
+                    out.append({'period': r['Period'], 'rec': r['Recorder'], 'rtype': r.get('Recorder_Type'),
+                                'dr': acc.get(r['AccountDr_Key']), 'cr': acc.get(r['AccountCr_Key']),
+                                'nom': juice_keys[k], 'sum': r.get('Сумма') or 0, 'qdr': r.get('КоличествоDr') or 0,
+                                'qcr': r.get('КоличествоCr') or 0, 'dr3': r.get('ExtDimensionDr3')})
+            if len(b) < 2000:
+                break
+        print(f'  скан {y}-{m:02d}: {len(out)}', flush=True)
+    JUICE_SCAN_CACHE.write_text(json.dumps(out, ensure_ascii=False), encoding='utf-8')
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--dump-json')
+    ap.add_argument('--rescan', action='store_true', help='заново пройти проводки 2023–2026 (долго), иначе кэш')
     args = ap.parse_args()
     g = build_guid_dict()
     supplier = g.get(SUPPLIER_KEY, '')
@@ -135,6 +171,41 @@ def main():
         events.append([case, 3, 'Списание', '2026-06-30',
                        f"{ent.split('_')[1]} {docnum[r['Recorder']]}", '', nm,
                        float(r.get('КоличествоCr') or 0), 0, float(r.get('Сумма') or 0), note])
+
+    # 3б. Что ушло из соков РАНЬШЕ июня: расход в производство (2024, количество — отчёты производства,
+    # рубли — регламентные операции) и списание требованиями на ОПР Дт 25 (2023)
+    scan = scan_juice_entries(juice_keys, acc, args.rescan)
+    recs = {}
+    for e in scan:
+        if e['cr'] == '10.01':
+            recs.setdefault(e['rtype'].split('.')[-1], set()).add(e['rec'])
+    nums = {}
+    for ent, rs in recs.items():
+        rs = sorted(rs)
+        for i in range(0, len(rs), 10):
+            ff = ' or '.join(f"Ref_Key eq guid'{r}'" for r in rs[i:i + 10])
+            for h in fetch_all(ent, select='Ref_Key,Number,Date', flt=ff):
+                nums[h['Ref_Key']] = h['Number']
+    label = {'Document_ОтчетПроизводстваЗаСмену': 'Отчёт производства', 'Document_РегламентнаяОперация': 'Регл. операция',
+             'Document_ТребованиеНакладная': 'Требование'}
+    debit_check = 0.0
+    for e in scan:
+        if e['dr'] == '10.01':
+            debit_check += e['sum']
+            continue
+        t = e['rtype'].split('.')[-1]
+        doc = f"{label.get(t, t)} {nums.get(e['rec'], '')}"
+        if t == 'Document_ОтчетПроизводстваЗаСмену':
+            prod = g.get(e['dr3'], '') if e.get('dr3') else ''
+            events.append(['Соки ДБ', 3, 'Расход в производство', d10(e['period']), doc, '', e['nom'],
+                           e['qcr'], 0, 0, f'В производство, продукция: {prod}'[:200]])
+        elif t == 'Document_РегламентнаяОперация':
+            events.append(['Соки ДБ', 3, 'Расход в производство, стоимость', d10(e['period']), doc, '', e['nom'],
+                           0, 0, round(e['sum'], 2), 'Стоимость расхода в производство проведена регламентной операцией при закрытии месяца'])
+        elif e['cr'] == '10.01' and e['dr'] == '25':
+            events.append(['Соки ДБ', 3, 'Списание на ОПР', d10(e['period']), doc, '', e['nom'],
+                           e['qcr'], 0, round(e['sum'], 2), 'Требование: списание на общепроизводственные расходы (Дт 25)'])
+    print(f'сверка: Дт 10.01 по проводкам {debit_check:,.0f}')
 
     # 4. Вода: ввод остатка 31.12.2025 (ручная операция, Дт 10.01 / Кт 000, без количества)
     opening = odata_get_json(f"Document_ОперацияБух?$format=json&$filter=Ref_Key eq guid'{OPENING_DOC}'&$select=Ref_Key,Number,Date")['value'][0]
